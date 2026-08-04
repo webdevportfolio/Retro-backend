@@ -138,6 +138,41 @@ app.post('/api/messages', async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 });
+app.post('/api/messages', async (req, res) => {
+  try {
+    const { sender_username, receiver_username, content, duration_minutes } = req.body;
+
+    if (!sender_username || !receiver_username || !content) {
+      return res.status(400).json({ error: 'Missing required message fields.' });
+    }
+
+    const duration = duration_minutes || 5;
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + duration * 60000).toISOString();
+
+    const { data, error } = await supabase
+      .from('messages')
+      .insert([
+        {
+          sender_username: sender_username.trim(),
+          receiver_username: receiver_username.trim(),
+          content: content.trim(),
+          created_at: now.toISOString(),
+          expires_at: expiresAt
+        }
+      ]);
+
+    if (error) {
+      console.error('Supabase insert error:', error);
+      return res.status(400).json({ error: error.message });
+    }
+
+    return res.status(201).json({ message: 'Message sent successfully', data });
+  } catch (err) {
+    console.error('Send Message Error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
 
 app.listen(PORT, () => {
   console.log(`RETRO backend listening on port ${PORT}`);
