@@ -10,7 +10,7 @@ app.use(cors());
 app.use(express.json());
 
 // Initialize Supabase Client with explicit fetch polyfill
-const SUPABASE_URL = 'https://zeiilpgzoeigbxzkjng.supabase.co';
+const SUPABASE_URL = 'https://zeiilpgzoqeigbxzkjng.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_Eq1Tqo9B6yYAQP5hFUvhhw_xigLm_to';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
