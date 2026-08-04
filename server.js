@@ -82,6 +82,62 @@ app.post('/api/login', async (req, res) => {
     return res.status(500).json({ error: err.message || 'Server backend connection error.' });
   }
 });
+// 3. GET MESSAGES ENDPOINT
+app.get('/api/messages/:username', async (req, res) => {
+  try {
+    const { username } = req.params;
+    // Query or fetch messages where receiver_username matches `username`
+    // (Make sure this matches your database logic/table structure)
+    const { data, error } = await supabase
+      .from('messages')
+      .select('*')
+      .eq('receiver_username', username);
+
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    return res.status(200).json(data || []);
+  } catch (err) {
+    console.error('Get Messages Error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// 4. SEND MESSAGE ENDPOINT
+app.post('/api/messages', async (req, res) => {
+  try {
+    const { sender_username, receiver_username, content, duration_minutes } = req.body;
+
+    if (!sender_username || !receiver_username || !content) {
+      return res.status(400).json({ error: 'Missing required message fields.' });
+    }
+
+    // Calculate expiration time based on duration (default to 5 mins if not provided)
+    const duration = duration_minutes || 5;
+    const expiresAt = new Date(Date.now() + duration * 60000).toISOString();
+
+    const { data, error } = await supabase
+      .from('messages')
+      .insert([
+        {
+          sender_username,
+          receiver_username,
+          content,
+          expires_at: expiresAt
+        }
+      ]);
+
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    return res.status(201).json({ message: 'Message sent successfully', data });
+  } catch (err) {
+    console.error('Send Message Error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
 
 app.listen(PORT, () => {
   console.log(`RETRO backend listening on port ${PORT}`);
