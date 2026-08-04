@@ -1,27 +1,29 @@
 const express = require('express');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
+const customFetch = require('node-fetch');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Enable CORS so your GitHub Pages frontend can send requests
 app.use(cors());
 app.use(express.json());
 
-// Initialize Supabase Client
+// Initialize Supabase Client with explicit fetch polyfill
 const SUPABASE_URL = 'https://zeiilpgzoeigbxzkjng.supabase.co';
-const SUPABASE_ANON_KEY = 'YOUR_COPIED_PUBLISHABLE_KEY_HERE';
+const SUPABASE_ANON_KEY = 'sb_publishable_Eq1Tqo9B6yYAQP5hFUvhhw_xigLm_to';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
     persistSession: false
+  },
+  global: {
+    fetch: customFetch
   }
 });
 
-// Root Health Check Route
 app.get('/', (req, res) => {
-  res.send('RETRO API is online and connected to Supabase');
+  res.send('RETRO API is online');
 });
 
 // 1. REGISTER ENDPOINT
@@ -50,7 +52,7 @@ app.post('/api/register', async (req, res) => {
     return res.status(201).json({ message: 'User registered successfully', username });
   } catch (err) {
     console.error('Register Endpoint Error:', err);
-    return res.status(500).json({ error: 'Server backend failed to fetch request. Please try again.' });
+    return res.status(500).json({ error: err.message || 'Server backend connection error.' });
   }
 });
 
@@ -77,11 +79,10 @@ app.post('/api/login', async (req, res) => {
     return res.status(200).json({ message: 'Login successful', username });
   } catch (err) {
     console.error('Login Endpoint Error:', err);
-    return res.status(500).json({ error: 'Server backend failed to fetch request. Please try again.' });
+    return res.status(500).json({ error: err.message || 'Server backend connection error.' });
   }
 });
 
-// Start the server
 app.listen(PORT, () => {
   console.log(`RETRO backend listening on port ${PORT}`);
 });
