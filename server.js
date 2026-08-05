@@ -27,8 +27,8 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 // ⚠️ REPLACE THESE — run `npx web-push generate-vapid-keys` and paste the real output here.
 // The keys below are placeholder/example keys and will NOT work.
 const vapidKeys = {
-  publicKey: 'REPLACE_WITH_GENERATED_PUBLIC_KEY',
-  privateKey: 'REPLACE_WITH_GENERATED_PRIVATE_KEY'
+  publicKey: 'BPcKzzLnxQa1kiR0gCuIG8O5BcNCA9DnWzbjMsRsSEmENBtDy_hrW7ahobkn3YLcX011NXlNutbsg4uSvR5e7c',
+  privateKey: 'zaq0TJUMjnmEU0AcrNqXSfvkYEvfhR_CIIzXab4vGYI'
 };
 
 webpush.setVapidDetails(
