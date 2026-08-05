@@ -158,3 +158,29 @@ app.post('/api/messages', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`RETRO backend listening on port ${PORT}`);
 });
+const typingUsers = new Map();
+
+// Endpoint to update typing status
+app.post('/api/typing', (req, res) => {
+  const { sender, receiver, isTyping } = req.body;
+  if (!sender || !receiver) return res.status(400).json({ error: 'Missing parameters' });
+
+  const key = `${sender.toLowerCase()}_${receiver.toLowerCase()}`;
+  typingUsers.set(key, { isTyping, timestamp: Date.now() });
+  
+  res.json({ success: true });
+});
+
+// Endpoint to check if a specific user is typing to receiver
+app.get('/api/typing/:sender/:receiver', (req, res) => {
+  const { sender, receiver } = req.params;
+  const key = `${sender.toLowerCase()}_${receiver.toLowerCase()}`;
+  const status = typingUsers.get(key);
+
+  // Expire typing state if older than 4 seconds
+  if (status && status.isTyping && (Date.now() - status.timestamp < 4000)) {
+    return res.json({ isTyping: true });
+  }
+
+  res.json({ isTyping: false });
+});
