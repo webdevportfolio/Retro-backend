@@ -23,16 +23,18 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   }
 });
 
-// Configure Web Push Keys
-const vapidKeys = (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) 
-  ? { publicKey: process.env.VAPID_PUBLIC_KEY, privateKey: process.env.VAPID_PRIVATE_KEY }
-  : webpush.generateVAPIDKeys();
+// Permanent Web Push Keys
+const vapidKeys = {
+  publicKey: 'BEl62iUYgUivxIkv69yViEuiBIa40yYTO0zpS1o297A_xX1L1oK8-8i2q1R62_0Xn9i6_q9x-916_x916_x9160', // replace with a generated public key
+  privateKey: 'YOUR_PRIVATE_KEY_HERE'
+};
 
 webpush.setVapidDetails(
   'mailto:support@retro.app',
   vapidKeys.publicKey,
   vapidKeys.privateKey
 );
+
 
 app.get('/', (req, res) => {
   res.send('RETRO API is online');
