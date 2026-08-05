@@ -24,8 +24,6 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 });
 
 // Permanent Web Push Keys
-// ⚠️ REPLACE THESE — run `npx web-push generate-vapid-keys` and paste the real output here.
-// The keys below are placeholder/example keys and will NOT work.
 const vapidKeys = {
   publicKey: 'BPcKzzLnxQa1kiR0gCuIG8O5BcNCA9DnWzbjMsRsSEmENBtDy_hrW7ahobkn3YLcX011NXlNutbsg4uSvR5e7c',
   privateKey: 'zaq0TJUMjnmEU0AcrNqXSfvkYEvfhR_CIIzXab4vGYI'
@@ -358,6 +356,86 @@ app.get('/api/groups/:groupId', async (req, res) => {
     if (error) return res.status(404).json({ error: 'Group not found' });
     return res.status(200).json(data);
   } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Update group members (add/remove/leave) — admin-only, except a user removing themselves (leave)
+app.patch('/api/groups/:groupId/members', async (req, res) => {
+  try {
+    const { members, requested_by } = req.body;
+
+    if (!members || !Array.isArray(members)) {
+      return res.status(400).json({ error: 'Missing or invalid members array' });
+    }
+    if (!requested_by) {
+      return res.status(400).json({ error: 'Missing requested_by' });
+    }
+
+    const requester = requested_by.trim().replace('@', '').toLowerCase();
+
+    // Fetch current group state
+    const { data: group, error: groupErr } = await supabase
+      .from('groups')
+      .select('*')
+      .eq('id', req.params.groupId)
+      .single();
+
+    if (groupErr || !group) return res.status(404).json({ error: 'Group not found' });
+
+    const isAdmin = (group.created_by || '').trim().replace('@', '').toLowerCase() === requester;
+
+    const oldMembers = (group.members || []).map(m => m.trim().replace('@', '').toLowerCase());
+    const newMembers = Array.from(
+      new Set(members.map(m => m.trim().replace('@', '')))
+    );
+    const newMembersLower = newMembers.map(m => m.toLowerCase());
+
+    const added = newMembersLower.filter(m => !oldMembers.includes(m));
+    const removed = oldMembers.filter(m => !newMembersLower.includes(m));
+
+    if (!isAdmin) {
+      // Non-admins may only remove themselves (leave) — nothing else
+      const isSelfLeaveOnly = added.length === 0 && removed.length === 1 && removed[0] === requester;
+      if (!isSelfLeaveOnly) {
+        return res.status(403).json({ error: 'Only the group admin can modify members' });
+      }
+    }
+
+    // Admin can't remove themselves via this route without transferring ownership first
+    if (isAdmin && removed.includes(requester)) {
+      return res.status(400).json({ error: 'Admin cannot leave the group. Delete the group instead.' });
+    }
+
+    // Validate any newly added usernames actually exist
+    if (added.length > 0) {
+      const { data: existingUsers, error: usersErr } = await supabase
+        .from('users')
+        .select('username');
+
+      if (usersErr) return res.status(500).json({ error: usersErr.message });
+
+      const validUsernames = new Set(
+        (existingUsers || []).map(u => u.username.trim().toLowerCase())
+      );
+
+      const invalid = added.filter(a => !validUsernames.has(a));
+      if (invalid.length > 0) {
+        return res.status(400).json({ error: `User(s) not found: ${invalid.join(', ')}` });
+      }
+    }
+
+    const { data, error } = await supabase
+      .from('groups')
+      .update({ members: newMembers })
+      .eq('id', req.params.groupId)
+      .select();
+
+    if (error) return res.status(400).json({ error: error.message });
+
+    return res.status(200).json(data[0]);
+  } catch (err) {
+    console.error('Update Members Error:', err);
     return res.status(500).json({ error: err.message });
   }
 });
