@@ -360,3 +360,51 @@ app.post('/api/groups/messages', async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 });
+// Create a new group
+app.post('/api/groups', async (req, res) => {
+  try {
+    const { name, created_by, members } = req.body;
+
+    if (!name || !created_by || !members || !Array.isArray(members)) {
+      return res.status(400).json({ error: 'Missing required group fields' });
+    }
+
+    // Clean usernames
+    const cleanCreator = created_by.trim().replace('@', '');
+    const cleanMembers = Array.from(
+      new Set([...members.map(m => m.trim().replace('@', '')), cleanCreator])
+    );
+
+    const { data, error } = await supabase
+      .from('groups')
+      .insert([{
+        name: name.trim(),
+        created_by: cleanCreator,
+        members: cleanMembers
+      }])
+      .select();
+
+    if (error) return res.status(400).json({ error: error.message });
+    return res.status(201).json(data[0]);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Fetch groups for a specific user
+app.get('/api/users/:username/groups', async (req, res) => {
+  try {
+    const cleanUser = req.params.username.trim().replace('@', '');
+
+    const { data, error } = await supabase
+      .from('groups')
+      .select('*')
+      .contains('members', [cleanUser])
+      .order('created_at', { ascending: false });
+
+    if (error) return res.status(400).json({ error: error.message });
+    return res.status(200).json(data || []);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
