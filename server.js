@@ -262,6 +262,24 @@ app.delete('/api/users/:username', async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 });
+// GET ALL USERS ENDPOINT (For Chat Code Verification)
+app.get('/api/users', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .select('username');
+
+    if (error) {
+      console.error('Error fetching users:', error.message);
+      return res.status(400).json({ error: error.message });
+    }
+
+    return res.status(200).json(data || []);
+  } catch (err) {
+    console.error('Get Users Error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
 
 // TYPING INDICATOR REAL-TIME STORE
 const typingUsers = new Map();
