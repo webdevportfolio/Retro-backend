@@ -23,12 +23,11 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   }
 });
 
-// Configure Web Push Keys (Generate VAPID keys for push notifications)
-const vapidKeys = webpush.generateVAPIDKeys();
+// Configure Web Push Keys using permanent Environment Variables to prevent key mismatch on server spin-down
 webpush.setVapidDetails(
   'mailto:support@retro.app',
-  vapidKeys.publicKey,
-  vapidKeys.privateKey
+  process.env.VAPID_PUBLIC_KEY,
+  process.env.VAPID_PRIVATE_KEY
 );
 
 // In-memory store for user push subscriptions
@@ -40,7 +39,7 @@ app.get('/', (req, res) => {
 
 // GET PUBLIC VAPID KEY (Frontend uses this to subscribe)
 app.get('/api/vapid-key', (req, res) => {
-  res.json({ publicKey: vapidKeys.publicKey });
+  res.json({ publicKey: process.env.VAPID_PUBLIC_KEY });
 });
 
 // SAVE PUSH SUBSCRIPTION
