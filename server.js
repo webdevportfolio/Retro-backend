@@ -447,17 +447,18 @@ app.get('/api/groups/:groupId/messages', async (req, res) => {
   }
 });
 
-// Send group message
-app.post('/api/groups/messages', async (req, res) => {
+// Send group message (Fixed route path matching frontend)
+app.post('/api/groups/:groupId/messages', async (req, res) => {
   try {
-    const { group_id, sender, content } = req.body;
-    if (!group_id || !sender || !content) {
+    const { groupId } = req.params;
+    const { sender, content } = req.body;
+    if (!groupId || !sender || !content) {
       return res.status(400).json({ error: 'Missing parameters' });
     }
 
     const { data, error } = await supabase
       .from('group_messages')
-      .insert([{ group_id, sender: sender.trim().replace('@', ''), content: content.trim() }])
+      .insert([{ group_id: groupId, sender: sender.trim().replace('@', ''), content: content.trim() }])
       .select();
 
     if (error) return res.status(400).json({ error: error.message });
