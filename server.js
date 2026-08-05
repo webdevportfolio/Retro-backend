@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
-const customFetch = require('node-fetch');
 const webpush = require('web-push');
 
 const app = express();
@@ -10,16 +9,13 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Initialize Supabase Client
+// Initialize Supabase Client (Using Node's built-in global fetch)
 const SUPABASE_URL = 'https://zeiilpgzoqeigbxzkjng.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_Eq1Tqo9B6yYAQP5hFUvhhw_xigLm_to';
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
     persistSession: false
-  },
-  global: {
-    fetch: customFetch
   }
 });
 
@@ -162,8 +158,7 @@ app.get('/api/messages/:username', async (req, res) => {
   }
 });
 
-// 3b. MARK MESSAGES AS READ (call this when a user opens a conversation)
-// Requires: ALTER TABLE messages ADD COLUMN read boolean DEFAULT false;
+// 3b. MARK MESSAGES AS READ
 app.post('/api/messages/:username/mark-read', async (req, res) => {
   try {
     const { username } = req.params;
@@ -190,7 +185,7 @@ app.post('/api/messages/:username/mark-read', async (req, res) => {
   }
 });
 
-// 4. SEND MESSAGE ENDPOINT (Triggers System Push Notification from Persistent Subscriptions)
+// 4. SEND MESSAGE ENDPOINT
 app.post('/api/messages', async (req, res) => {
   try {
     const { sender_username, receiver_username, content, duration_minutes } = req.body;
@@ -300,7 +295,7 @@ app.delete('/api/users/:username', async (req, res) => {
   }
 });
 
-// GET ALL USERS ENDPOINT (For Chat Code Verification)
+// GET ALL USERS ENDPOINT
 app.get('/api/users', async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -360,7 +355,7 @@ app.get('/api/groups/:groupId', async (req, res) => {
   }
 });
 
-// Update group members (add/remove/leave) — admin-only, except a user removing themselves (leave)
+// Update group members
 app.patch('/api/groups/:groupId/members', async (req, res) => {
   try {
     const { members, requested_by } = req.body;
@@ -374,7 +369,6 @@ app.patch('/api/groups/:groupId/members', async (req, res) => {
 
     const requester = requested_by.trim().replace('@', '').toLowerCase();
 
-    // Fetch current group state
     const { data: group, error: groupErr } = await supabase
       .from('groups')
       .select('*')
@@ -395,19 +389,16 @@ app.patch('/api/groups/:groupId/members', async (req, res) => {
     const removed = oldMembers.filter(m => !newMembersLower.includes(m));
 
     if (!isAdmin) {
-      // Non-admins may only remove themselves (leave) — nothing else
       const isSelfLeaveOnly = added.length === 0 && removed.length === 1 && removed[0] === requester;
       if (!isSelfLeaveOnly) {
         return res.status(403).json({ error: 'Only the group admin can modify members' });
       }
     }
 
-    // Admin can't remove themselves via this route without transferring ownership first
     if (isAdmin && removed.includes(requester)) {
       return res.status(400).json({ error: 'Admin cannot leave the group. Delete the group instead.' });
     }
 
-    // Validate any newly added usernames actually exist
     if (added.length > 0) {
       const { data: existingUsers, error: usersErr } = await supabase
         .from('users')
@@ -485,7 +476,6 @@ app.post('/api/groups', async (req, res) => {
       return res.status(400).json({ error: 'Missing required group fields' });
     }
 
-    // Clean usernames
     const cleanCreator = created_by.trim().replace('@', '');
     const cleanMembers = Array.from(
       new Set([...members.map(m => m.trim().replace('@', '')), cleanCreator])
