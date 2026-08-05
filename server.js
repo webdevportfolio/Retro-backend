@@ -25,8 +25,8 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 
 // Permanent Web Push Keys
 const vapidKeys = {
-  publicKey: 'BPcKzzLnxQa1kiR0gCuIG8O5BcNCA9DnWzbjMsRsSEmENBtDy_hrW7ahobkn3YLcX011NXlNutbsg4uSvR5e7c',
-  privateKey: 'zaq0TJUMjnmEU0AcrNqXSfvkYEvfhR_CIIzXab4vGYI'
+  publicKey: 'BAhkw3vHxzaiUqvNkfVnrHAEI5z39UYcbRPGSL9WLrdZ4z2poSmOAydy5IWTAAJ_n45j9T02XzuS1vckEyKxCw',
+  privateKey: 'vf5VNz_AHhHToNYYfHVVtWpR7rTEGotcFlCgRZCEUIw'
 };
 
 webpush.setVapidDetails(
