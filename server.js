@@ -94,13 +94,12 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// 3. GET MESSAGES ENDPOINT (Updated to fetch both sent and received)
+// 3. GET MESSAGES ENDPOINT
 app.get('/api/messages/:username', async (req, res) => {
   try {
     const { username } = req.params;
     const cleanUsername = username.trim();
 
-    // Fetch messages where the user is EITHER the sender OR the receiver
     const { data, error } = await supabase
       .from('messages')
       .select('*')
@@ -116,7 +115,6 @@ app.get('/api/messages/:username', async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 });
-
 
 // 4. SEND MESSAGE ENDPOINT
 app.post('/api/messages', async (req, res) => {
@@ -155,9 +153,43 @@ app.post('/api/messages', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`RETRO backend listening on port ${PORT}`);
+// 5. DELETE USER & ASSOCIATED MESSAGES ENDPOINT
+app.delete('/api/users/:username', async (req, res) => {
+  try {
+    const { username } = req.params;
+    const cleanUsername = username.trim();
+
+    // 1. Delete all messages sent by or received by this user
+    const { error: msgError } = await supabase
+      .from('messages')
+      .delete()
+      .or(`sender_username.eq.${cleanUsername},receiver_username.eq.${cleanUsername}`);
+
+    if (msgError) {
+      console.error('Error deleting user messages:', msgError.message);
+    }
+
+    // 2. Delete user from public 'users' table
+    const { error: userError } = await supabase
+      .from('users')
+      .delete()
+      .eq('username', cleanUsername);
+
+    if (userError) {
+      console.error('Error deleting user record:', userError.message);
+      return res.status(400).json({ error: userError.message });
+    }
+
+    return res.status(200).json({ 
+      message: `User '${cleanUsername}' and all associated chat logs deleted successfully.` 
+    });
+  } catch (err) {
+    console.error('Delete User Error:', err);
+    return res.status(500).json({ error: err.message });
+  }
 });
+
+// TYPING INDICATOR REAL-TIME STORE
 const typingUsers = new Map();
 
 // Endpoint to update typing status
@@ -183,4 +215,8 @@ app.get('/api/typing/:sender/:receiver', (req, res) => {
   }
 
   res.json({ isTyping: false });
+});
+
+app.listen(PORT, () => {
+  console.log(`RETRO backend listening on port ${PORT}`);
 });
