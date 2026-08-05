@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
 const customFetch = require('node-fetch');
+const webpush = require('web-push');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -9,7 +10,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Initialize Supabase Client with explicit fetch polyfill
+// Initialize Supabase Client
 const SUPABASE_URL = 'https://zeiilpgzoqeigbxzkjng.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_Eq1Tqo9B6yYAQP5hFUvhhw_xigLm_to';
 
@@ -22,8 +23,33 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   }
 });
 
+// Configure Web Push Keys (Generate VAPID keys for push notifications)
+const vapidKeys = webpush.generateVAPIDKeys();
+webpush.setVapidDetails(
+  'mailto:support@retro.app',
+  vapidKeys.publicKey,
+  vapidKeys.privateKey
+);
+
+// In-memory store for user push subscriptions
+const pushSubscriptions = new Map();
+
 app.get('/', (req, res) => {
   res.send('RETRO API is online');
+});
+
+// GET PUBLIC VAPID KEY (Frontend uses this to subscribe)
+app.get('/api/vapid-key', (req, res) => {
+  res.json({ publicKey: vapidKeys.publicKey });
+});
+
+// SAVE PUSH SUBSCRIPTION
+app.post('/api/subscribe', (req, res) => {
+  const { username, subscription } = req.body;
+  if (!username || !subscription) return res.status(400).json({ error: 'Missing subscription details' });
+
+  pushSubscriptions.set(username.trim().toLowerCase(), subscription);
+  res.status(201).json({ message: 'Subscribed to notifications' });
 });
 
 // 1. REGISTER ENDPOINT
@@ -38,7 +64,6 @@ app.post('/api/register', async (req, res) => {
     const cleanUsername = username.trim();
     const email = `${cleanUsername.toLowerCase()}@retro.app`;
 
-    // 1. Sign up with Supabase Auth
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
@@ -51,7 +76,6 @@ app.post('/api/register', async (req, res) => {
       return res.status(400).json({ error: error.message });
     }
 
-    // 2. Also insert into your public 'users' table so foreign keys match!
     const { error: dbError } = await supabase
       .from('users')
       .insert([{ username: cleanUsername, password_hash: password }]);
@@ -94,16 +118,18 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// 3. GET MESSAGES ENDPOINT
+// 3. GET MESSAGES ENDPOINT (Filters out expired messages automatically)
 app.get('/api/messages/:username', async (req, res) => {
   try {
     const { username } = req.params;
     const cleanUsername = username.trim();
+    const nowIso = new Date().toISOString();
 
     const { data, error } = await supabase
       .from('messages')
       .select('*')
-      .or(`sender_username.eq.${cleanUsername},receiver_username.eq.${cleanUsername}`);
+      .or(`sender_username.eq.${cleanUsername},receiver_username.eq.${cleanUsername}`)
+      .gt('expires_at', nowIso); // Only returns messages where expires_at is in the future
 
     if (error) {
       return res.status(400).json({ error: error.message });
@@ -116,7 +142,7 @@ app.get('/api/messages/:username', async (req, res) => {
   }
 });
 
-// 4. SEND MESSAGE ENDPOINT
+// 4. SEND MESSAGE ENDPOINT (Triggers System Push Notification)
 app.post('/api/messages', async (req, res) => {
   try {
     const { sender_username, receiver_username, content, duration_minutes } = req.body;
@@ -146,6 +172,22 @@ app.post('/api/messages', async (req, res) => {
       return res.status(400).json({ error: error.message });
     }
 
+    // Trigger System Notification to Receiver
+    const receiverKey = receiver_username.trim().toLowerCase();
+    const sub = pushSubscriptions.get(receiverKey);
+
+    if (sub) {
+      const payload = JSON.stringify({
+        title: sender_username,
+        body: content,
+        url: `/chat.html?user=${encodeURIComponent(sender_username)}`
+      });
+
+      webpush.sendNotification(sub, payload).catch((pushErr) => {
+        console.error('Push notification failed:', pushErr);
+      });
+    }
+
     return res.status(201).json({ message: 'Message sent successfully', data });
   } catch (err) {
     console.error('Send Message Error:', err);
@@ -159,7 +201,6 @@ app.delete('/api/users/:username', async (req, res) => {
     const { username } = req.params;
     const cleanUsername = username.trim();
 
-    // 1. Delete all messages sent by or received by this user
     const { error: msgError } = await supabase
       .from('messages')
       .delete()
@@ -169,7 +210,6 @@ app.delete('/api/users/:username', async (req, res) => {
       console.error('Error deleting user messages:', msgError.message);
     }
 
-    // 2. Delete user from public 'users' table
     const { error: userError } = await supabase
       .from('users')
       .delete()
@@ -192,7 +232,6 @@ app.delete('/api/users/:username', async (req, res) => {
 // TYPING INDICATOR REAL-TIME STORE
 const typingUsers = new Map();
 
-// Endpoint to update typing status
 app.post('/api/typing', (req, res) => {
   const { sender, receiver, isTyping } = req.body;
   if (!sender || !receiver) return res.status(400).json({ error: 'Missing parameters' });
@@ -203,13 +242,11 @@ app.post('/api/typing', (req, res) => {
   res.json({ success: true });
 });
 
-// Endpoint to check if a specific user is typing to receiver
 app.get('/api/typing/:sender/:receiver', (req, res) => {
   const { sender, receiver } = req.params;
   const key = `${sender.toLowerCase()}_${receiver.toLowerCase()}`;
   const status = typingUsers.get(key);
 
-  // Expire typing state if older than 4 seconds
   if (status && status.isTyping && (Date.now() - status.timestamp < 4000)) {
     return res.json({ isTyping: true });
   }
