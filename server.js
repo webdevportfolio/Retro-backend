@@ -23,7 +23,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   }
 });
 
-// Configure Web Push Keys (Uses Environment Variables if available, otherwise generates them dynamically so it never crashes)
+// Configure Web Push Keys
 const vapidKeys = (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) 
   ? { publicKey: process.env.VAPID_PUBLIC_KEY, privateKey: process.env.VAPID_PRIVATE_KEY }
   : webpush.generateVAPIDKeys();
@@ -34,25 +34,40 @@ webpush.setVapidDetails(
   vapidKeys.privateKey
 );
 
-// In-memory store for user push subscriptions
-const pushSubscriptions = new Map();
-
 app.get('/', (req, res) => {
   res.send('RETRO API is online');
 });
 
-// GET PUBLIC VAPID KEY (Frontend uses this to subscribe)
+// GET PUBLIC VAPID KEY
 app.get('/api/vapid-key', (req, res) => {
   res.json({ publicKey: vapidKeys.publicKey });
 });
 
-// SAVE PUSH SUBSCRIPTION
-app.post('/api/subscribe', (req, res) => {
-  const { username, subscription } = req.body;
-  if (!username || !subscription) return res.status(400).json({ error: 'Missing subscription details' });
+// SAVE PUSH SUBSCRIPTION (Persisted in Supabase DB)
+app.post('/api/subscribe', async (req, res) => {
+  try {
+    const { username, subscription } = req.body;
+    if (!username || !subscription) return res.status(400).json({ error: 'Missing subscription details' });
 
-  pushSubscriptions.set(username.trim().toLowerCase(), subscription);
-  res.status(201).json({ message: 'Subscribed to notifications' });
+    const cleanUser = username.trim().toLowerCase();
+
+    const { error } = await supabase
+      .from('subscriptions')
+      .upsert(
+        { username: cleanUser, subscription: JSON.stringify(subscription), updated_at: new Date().toISOString() },
+        { onConflict: 'username' }
+      );
+
+    if (error) {
+      console.error('Failed to save subscription:', error.message);
+      return res.status(500).json({ error: error.message });
+    }
+
+    res.status(201).json({ message: 'Subscribed to notifications successfully' });
+  } catch (err) {
+    console.error('Subscribe Endpoint Error:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // 1. REGISTER ENDPOINT
@@ -121,7 +136,7 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// 3. GET MESSAGES ENDPOINT (Filters out expired messages automatically)
+// 3. GET MESSAGES ENDPOINT
 app.get('/api/messages/:username', async (req, res) => {
   try {
     const { username } = req.params;
@@ -132,7 +147,7 @@ app.get('/api/messages/:username', async (req, res) => {
       .from('messages')
       .select('*')
       .or(`sender_username.eq.${cleanUsername},receiver_username.eq.${cleanUsername}`)
-      .gt('expires_at', nowIso); // Only returns messages where expires_at is in the future
+      .gt('expires_at', nowIso);
 
     if (error) {
       return res.status(400).json({ error: error.message });
@@ -145,7 +160,7 @@ app.get('/api/messages/:username', async (req, res) => {
   }
 });
 
-// 4. SEND MESSAGE ENDPOINT (Triggers System Push Notification)
+// 4. SEND MESSAGE ENDPOINT (Triggers System Push Notification from Persistent Subscriptions)
 app.post('/api/messages', async (req, res) => {
   try {
     const { sender_username, receiver_username, content, duration_minutes } = req.body;
@@ -168,26 +183,35 @@ app.post('/api/messages', async (req, res) => {
           created_at: now.toISOString(),
           expires_at: expiresAt
         }
-      ]);
+      ])
+      .select();
 
     if (error) {
       console.error('Supabase insert error:', error);
       return res.status(400).json({ error: error.message });
     }
 
-    // Trigger System Notification to Receiver
+    // Retrieve Receiver's Push Subscription from Supabase
     const receiverKey = receiver_username.trim().toLowerCase();
-    const sub = pushSubscriptions.get(receiverKey);
+    const { data: subData } = await supabase
+      .from('subscriptions')
+      .select('subscription')
+      .eq('username', receiverKey)
+      .maybeSingle();
 
-    if (sub) {
+    if (subData && subData.subscription) {
+      const pushSub = typeof subData.subscription === 'string' 
+        ? JSON.parse(subData.subscription) 
+        : subData.subscription;
+
       const payload = JSON.stringify({
         title: sender_username,
         body: content,
         url: `/chat.html?user=${encodeURIComponent(sender_username)}`
       });
 
-      webpush.sendNotification(sub, payload).catch((pushErr) => {
-        console.error('Push notification failed:', pushErr);
+      webpush.sendNotification(pushSub, payload).catch((pushErr) => {
+        console.error('Push notification trigger error:', pushErr);
       });
     }
 
@@ -203,6 +227,11 @@ app.delete('/api/users/:username', async (req, res) => {
   try {
     const { username } = req.params;
     const cleanUsername = username.trim();
+
+    await supabase
+      .from('subscriptions')
+      .delete()
+      .eq('username', cleanUsername.toLowerCase());
 
     const { error: msgError } = await supabase
       .from('messages')
