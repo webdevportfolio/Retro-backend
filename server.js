@@ -94,14 +94,17 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// 3. GET MESSAGES ENDPOINT
+// 3. GET MESSAGES ENDPOINT (Updated to fetch both sent and received)
 app.get('/api/messages/:username', async (req, res) => {
   try {
     const { username } = req.params;
+    const cleanUsername = username.trim();
+
+    // Fetch messages where the user is EITHER the sender OR the receiver
     const { data, error } = await supabase
       .from('messages')
       .select('*')
-      .eq('receiver_username', username);
+      .or(`sender_username.eq.${cleanUsername},receiver_username.eq.${cleanUsername}`);
 
     if (error) {
       return res.status(400).json({ error: error.message });
@@ -113,6 +116,7 @@ app.get('/api/messages/:username', async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 });
+
 
 // 4. SEND MESSAGE ENDPOINT
 app.post('/api/messages', async (req, res) => {
