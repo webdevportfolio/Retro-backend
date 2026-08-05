@@ -309,3 +309,54 @@ app.get('/api/typing/:sender/:receiver', (req, res) => {
 app.listen(PORT, () => {
   console.log(`RETRO backend listening on port ${PORT}`);
 });
+// Get group info
+app.get('/api/groups/:groupId', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('groups')
+      .select('*')
+      .eq('id', req.params.groupId)
+      .single();
+
+    if (error) return res.status(404).json({ error: 'Group not found' });
+    return res.status(200).json(data);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Fetch group messages
+app.get('/api/groups/:groupId/messages', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('group_messages')
+      .select('*')
+      .eq('group_id', req.params.groupId)
+      .order('created_at', { ascending: true });
+
+    if (error) return res.status(400).json({ error: error.message });
+    return res.status(200).json(data || []);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Send group message
+app.post('/api/groups/messages', async (req, res) => {
+  try {
+    const { group_id, sender, content } = req.body;
+    if (!group_id || !sender || !content) {
+      return res.status(400).json({ error: 'Missing parameters' });
+    }
+
+    const { data, error } = await supabase
+      .from('group_messages')
+      .insert([{ group_id, sender: sender.trim().replace('@', ''), content: content.trim() }])
+      .select();
+
+    if (error) return res.status(400).json({ error: error.message });
+    return res.status(201).json(data);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
