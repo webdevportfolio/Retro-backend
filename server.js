@@ -127,7 +127,7 @@ app.post('/api/messages', async (req, res) => {
       return res.status(400).json({ error: 'Missing required message fields.' });
     }
 
-    const duration = duration_minutes || 5;
+    const duration = duration_minutes || 10;
     const now = new Date();
     const expiresAt = new Date(now.getTime() + duration * 60000).toISOString();
 
