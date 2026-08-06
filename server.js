@@ -7,7 +7,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' })); // Increased limit to support Base64 avatar uploads
 
 // Initialize Supabase Client
 const SUPABASE_URL = 'https://zeiilpgzoqeigbxzkjng.supabase.co';
@@ -133,7 +133,90 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// 3. GET MESSAGES ENDPOINT
+// 3. PROFILE PICTURE SYNC ENDPOINT
+app.post('/api/users/profile', async (req, res) => {
+  try {
+    const { username } = req.body;
+    const pfp = req.body['profile picture'] || req.body.pfp || req.body.avatar;
+
+    if (!username || !pfp) {
+      return res.status(400).json({ error: 'Username and profile picture are required.' });
+    }
+
+    const cleanUsername = username.trim();
+
+    // Dynamically build payload to match available Supabase column schema
+    const updateData = {
+      'profile picture': pfp,
+      pfp: pfp,
+      avatar: pfp
+    };
+
+    const { data, error } = await supabase
+      .from('users')
+      .update(updateData)
+      .eq('username', cleanUsername)
+      .select();
+
+    if (error) {
+      console.error('Failed to update profile picture in Supabase:', error.message);
+      return res.status(400).json({ error: error.message });
+    }
+
+    return res.status(200).json({ message: 'Profile picture updated successfully', data });
+  } catch (err) {
+    console.error('Profile Endpoint Error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// 4. GET SINGLE USER ENDPOINT
+app.get('/api/users/:username', async (req, res) => {
+  try {
+    const { username } = req.params;
+    const cleanUsername = username.trim();
+
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .ilike('username', cleanUsername)
+      .maybeSingle();
+
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    if (!data) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    return res.status(200).json(data);
+  } catch (err) {
+    console.error('Get User Error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// 5. GET ALL USERS ENDPOINT (Updated to include all fields)
+app.get('/api/users', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .select('*');
+
+    if (error) {
+      console.error('Error fetching users:', error.message);
+      return res.status(400).json({ error: error.message });
+    }
+
+    return res.status(200).json(data || []);
+  } catch (err) {
+    console.error('Get Users Error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// 6. GET MESSAGES ENDPOINT
 app.get('/api/messages/:username', async (req, res) => {
   try {
     const { username } = req.params;
@@ -157,7 +240,7 @@ app.get('/api/messages/:username', async (req, res) => {
   }
 });
 
-// 3b. MARK MESSAGES AS READ
+// 7. MARK MESSAGES AS READ
 app.post('/api/messages/:username/mark-read', async (req, res) => {
   try {
     const { username } = req.params;
@@ -184,7 +267,7 @@ app.post('/api/messages/:username/mark-read', async (req, res) => {
   }
 });
 
-// 4. SEND MESSAGE ENDPOINT
+// 8. SEND MESSAGE ENDPOINT
 app.post('/api/messages', async (req, res) => {
   try {
     const { sender_username, receiver_username, content, duration_minutes } = req.body;
@@ -254,7 +337,7 @@ app.post('/api/messages', async (req, res) => {
   }
 });
 
-// 5. DELETE USER & ASSOCIATED MESSAGES ENDPOINT
+// 9. DELETE USER & ASSOCIATED MESSAGES ENDPOINT
 app.delete('/api/users/:username', async (req, res) => {
   try {
     const { username } = req.params;
@@ -293,26 +376,7 @@ app.delete('/api/users/:username', async (req, res) => {
   }
 });
 
-// GET ALL USERS ENDPOINT
-app.get('/api/users', async (req, res) => {
-  try {
-    const { data, error } = await supabase
-      .from('users')
-      .select('username');
-
-    if (error) {
-      console.error('Error fetching users:', error.message);
-      return res.status(400).json({ error: error.message });
-    }
-
-    return res.status(200).json(data || []);
-  } catch (err) {
-    console.error('Get Users Error:', err);
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-// TYPING INDICATOR REAL-TIME STORE
+// 10. TYPING INDICATOR REAL-TIME STORE
 const typingUsers = new Map();
 
 app.post('/api/typing', (req, res) => {
