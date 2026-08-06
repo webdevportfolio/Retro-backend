@@ -7,7 +7,8 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json({ limit: '10mb' })); // Increased limit to support Base64 avatar uploads
+// Increased limit to accept Base64 profile image payloads
+app.use(express.json({ limit: '10mb' }));
 
 // Initialize Supabase Client
 const SUPABASE_URL = 'https://zeiilpgzoqeigbxzkjng.supabase.co';
@@ -133,7 +134,7 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// 3. PROFILE PICTURE SYNC ENDPOINT
+// 3. PROFILE PICTURE SYNC ENDPOINT (Newly Added)
 app.post('/api/users/profile', async (req, res) => {
   try {
     const { username } = req.body;
@@ -145,7 +146,7 @@ app.post('/api/users/profile', async (req, res) => {
 
     const cleanUsername = username.trim();
 
-    // Dynamically build payload to match available Supabase column schema
+    // Map common avatar key variations
     const updateData = {
       'profile picture': pfp,
       pfp: pfp,
@@ -170,7 +171,7 @@ app.post('/api/users/profile', async (req, res) => {
   }
 });
 
-// 4. GET SINGLE USER ENDPOINT
+// 4. GET SINGLE USER ENDPOINT (Newly Added)
 app.get('/api/users/:username', async (req, res) => {
   try {
     const { username } = req.params;
@@ -197,7 +198,7 @@ app.get('/api/users/:username', async (req, res) => {
   }
 });
 
-// 5. GET ALL USERS ENDPOINT (Updated to include all fields)
+// 5. GET ALL USERS ENDPOINT (Updated select to return all columns)
 app.get('/api/users', async (req, res) => {
   try {
     const { data, error } = await supabase
