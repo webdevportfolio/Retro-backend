@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Initialize Supabase Client (Using Node's built-in global fetch)
+// Initialize Supabase Client
 const SUPABASE_URL = 'https://zeiilpgzoqeigbxzkjng.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_Eq1Tqo9B6yYAQP5hFUvhhw_xigLm_to';
 
@@ -19,18 +19,17 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   }
 });
 
-// Permanent Web Push Keys (Keep these static so subscriptions don't break on restart)
+// Permanent Web Push Keys
 const vapidKeys = {
   publicKey: 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYPK5NjhY8',
   privateKey: 'X_m8c8JzL2N2K6k0B5r3v1x4z7f9h2j5m8p1s4v7y0A'
 };
 
 webpush.setVapidDetails(
-  'mailto:mustaphaadegboyega801@gmail.com',
+  'mailto:support@retro.app',
   vapidKeys.publicKey,
   vapidKeys.privateKey
 );
-
 
 app.get('/', (req, res) => {
   res.send('RETRO API is online');
@@ -41,7 +40,7 @@ app.get('/api/vapid-key', (req, res) => {
   res.json({ publicKey: vapidKeys.publicKey });
 });
 
-// SAVE PUSH SUBSCRIPTION (Persisted in Supabase DB)
+// SAVE PUSH SUBSCRIPTION
 app.post('/api/subscribe', async (req, res) => {
   try {
     const { username, subscription } = req.body;
@@ -217,7 +216,7 @@ app.post('/api/messages', async (req, res) => {
       return res.status(400).json({ error: error.message });
     }
 
-    // Retrieve Receiver's Push Subscription from Supabase
+    // Retrieve Receiver's Push Subscription
     const receiverKey = receiver_username.trim().toLowerCase();
     const { data: subData } = await supabase
       .from('subscriptions')
@@ -230,7 +229,6 @@ app.post('/api/messages', async (req, res) => {
         ? JSON.parse(subData.subscription) 
         : subData.subscription;
 
-      // Compute the receiver's real total unread count for the app badge
       const { count: unreadCount } = await supabase
         .from('messages')
         .select('*', { count: 'exact', head: true })
@@ -337,183 +335,6 @@ app.get('/api/typing/:sender/:receiver', (req, res) => {
   }
 
   res.json({ isTyping: false });
-});
-
-// Get group info
-app.get('/api/groups/:groupId', async (req, res) => {
-  try {
-    const { data, error } = await supabase
-      .from('groups')
-      .select('*')
-      .eq('id', req.params.groupId)
-      .single();
-
-    if (error) return res.status(404).json({ error: 'Group not found' });
-    return res.status(200).json(data);
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-// Update group members
-app.patch('/api/groups/:groupId/members', async (req, res) => {
-  try {
-    const { members, requested_by } = req.body;
-
-    if (!members || !Array.isArray(members)) {
-      return res.status(400).json({ error: 'Missing or invalid members array' });
-    }
-    if (!requested_by) {
-      return res.status(400).json({ error: 'Missing requested_by' });
-    }
-
-    const requester = requested_by.trim().replace('@', '').toLowerCase();
-
-    const { data: group, error: groupErr } = await supabase
-      .from('groups')
-      .select('*')
-      .eq('id', req.params.groupId)
-      .single();
-
-    if (groupErr || !group) return res.status(404).json({ error: 'Group not found' });
-
-    const isAdmin = (group.created_by || '').trim().replace('@', '').toLowerCase() === requester;
-
-    const oldMembers = (group.members || []).map(m => m.trim().replace('@', '').toLowerCase());
-    const newMembers = Array.from(
-      new Set(members.map(m => m.trim().replace('@', '')))
-    );
-    const newMembersLower = newMembers.map(m => m.toLowerCase());
-
-    const added = newMembersLower.filter(m => !oldMembers.includes(m));
-    const removed = oldMembers.filter(m => !newMembersLower.includes(m));
-
-    if (!isAdmin) {
-      const isSelfLeaveOnly = added.length === 0 && removed.length === 1 && removed[0] === requester;
-      if (!isSelfLeaveOnly) {
-        return res.status(403).json({ error: 'Only the group admin can modify members' });
-      }
-    }
-
-    if (isAdmin && removed.includes(requester)) {
-      return res.status(400).json({ error: 'Admin cannot leave the group. Delete the group instead.' });
-    }
-
-    if (added.length > 0) {
-      const { data: existingUsers, error: usersErr } = await supabase
-        .from('users')
-        .select('username');
-
-      if (usersErr) return res.status(500).json({ error: usersErr.message });
-
-      const validUsernames = new Set(
-        (existingUsers || []).map(u => u.username.trim().toLowerCase())
-      );
-
-      const invalid = added.filter(a => !validUsernames.has(a));
-      if (invalid.length > 0) {
-        return res.status(400).json({ error: `User(s) not found: ${invalid.join(', ')}` });
-      }
-    }
-
-    const { data, error } = await supabase
-      .from('groups')
-      .update({ members: newMembers })
-      .eq('id', req.params.groupId)
-      .select();
-
-    if (error) return res.status(400).json({ error: error.message });
-
-    return res.status(200).json(data[0]);
-  } catch (err) {
-    console.error('Update Members Error:', err);
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-// Fetch group messages
-app.get('/api/groups/:groupId/messages', async (req, res) => {
-  try {
-    const { data, error } = await supabase
-      .from('group_messages')
-      .select('*')
-      .eq('group_id', req.params.groupId)
-      .order('created_at', { ascending: true });
-
-    if (error) return res.status(400).json({ error: error.message });
-    return res.status(200).json(data || []);
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-// Send group message (Fixed route path matching frontend)
-app.post('/api/groups/:groupId/messages', async (req, res) => {
-  try {
-    const { groupId } = req.params;
-    const { sender, content } = req.body;
-    if (!groupId || !sender || !content) {
-      return res.status(400).json({ error: 'Missing parameters' });
-    }
-
-    const { data, error } = await supabase
-      .from('group_messages')
-      .insert([{ group_id: groupId, sender: sender.trim().replace('@', ''), content: content.trim() }])
-      .select();
-
-    if (error) return res.status(400).json({ error: error.message });
-    return res.status(201).json(data);
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-// Create a new group
-app.post('/api/groups', async (req, res) => {
-  try {
-    const { name, created_by, members } = req.body;
-
-    if (!name || !created_by || !members || !Array.isArray(members)) {
-      return res.status(400).json({ error: 'Missing required group fields' });
-    }
-
-    const cleanCreator = created_by.trim().replace('@', '');
-    const cleanMembers = Array.from(
-      new Set([...members.map(m => m.trim().replace('@', '')), cleanCreator])
-    );
-
-    const { data, error } = await supabase
-      .from('groups')
-      .insert([{
-        name: name.trim(),
-        created_by: cleanCreator,
-        members: cleanMembers
-      }])
-      .select();
-
-    if (error) return res.status(400).json({ error: error.message });
-    return res.status(201).json(data[0]);
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-// Fetch groups for a specific user
-app.get('/api/users/:username/groups', async (req, res) => {
-  try {
-    const cleanUser = req.params.username.trim().replace('@', '');
-
-    const { data, error } = await supabase
-      .from('groups')
-      .select('*')
-      .contains('members', [cleanUser])
-      .order('created_at', { ascending: false });
-
-    if (error) return res.status(400).json({ error: error.message });
-    return res.status(200).json(data || []);
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
-  }
 });
 
 app.listen(PORT, () => {
