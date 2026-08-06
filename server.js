@@ -405,3 +405,25 @@ app.get('/api/typing/:sender/:receiver', (req, res) => {
 app.listen(PORT, () => {
   console.log(`RETRO backend listening on port ${PORT}`);
 });
+// Store for active users (Username -> Last Active Timestamp)
+const onlineUsers = new Map();
+
+// 1. Send Heartbeat (Called by frontend every 15–30 seconds)
+app.post('/api/heartbeat', (req, res) => {
+  const { username } = req.body;
+  if (!username) return res.status(400).json({ error: 'Username required' });
+
+  onlineUsers.set(username.trim().toLowerCase(), Date.now());
+  res.json({ success: true });
+});
+
+// 2. Check Online Status for Target User
+app.get('/api/online-status/:username', (req, res) => {
+  const target = req.params.username.trim().toLowerCase();
+  const lastActive = onlineUsers.get(target);
+
+  // Consider online if active within the last 45 seconds
+  const isOnline = lastActive && (Date.now() - lastActive < 45000);
+
+  res.json({ online: Boolean(isOnline) });
+});
