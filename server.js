@@ -134,11 +134,11 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// 3. PROFILE PICTURE SYNC ENDPOINT (Newly Added)
+// 3. PROFILE PICTURE SYNC ENDPOINT
 app.post('/api/users/profile', async (req, res) => {
   try {
     const { username } = req.body;
-    const pfp = req.body['profile picture'] || req.body.pfp || req.body.avatar;
+    const pfp = req.body.profile_picture || req.body['profile picture'] || req.body.pfp || req.body.avatar;
 
     if (!username || !pfp) {
       return res.status(400).json({ error: 'Username and profile picture are required.' });
@@ -146,10 +146,8 @@ app.post('/api/users/profile', async (req, res) => {
 
     const cleanUsername = username.trim();
 
-    // Map common avatar key variations
     const updateData = {
-      'profile picture': pfp,
-      pfp: pfp,
+      profile_picture: pfp,
       avatar: pfp
     };
 
@@ -170,6 +168,7 @@ app.post('/api/users/profile', async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 });
+
 
 // 4. GET SINGLE USER ENDPOINT (Newly Added)
 app.get('/api/users/:username', async (req, res) => {
