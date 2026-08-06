@@ -7,14 +7,15 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-// Increased limit to accept Base64 profile image payloads
 app.use(express.json({ limit: '10mb' }));
 
-// Initialize Supabase Client
+// Supabase Credentials
 const SUPABASE_URL = 'https://zeiilpgzoqeigbxzkjng.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable_Eq1Tqo9B6yYAQP5hFUvhhw_xigLm_to';
+// Ensure SUPABASE_SERVICE_ROLE_KEY is set in your Render environment variables 
+// so admin commands like auth.admin.deleteUser can execute.
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'sb_publishable_Eq1Tqo9B6yYAQP5hFUvhhw_xigLm_to';
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
   auth: {
     persistSession: false
   }
@@ -23,7 +24,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 // Permanent Web Push Keys
 const vapidKeys = {
   publicKey: 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYPK5NjhY8',
-  privateKey: 'X_m8c8JzL2N2K6k0B5r3v1x4z7f9h2j5m8p1s4v7y0A'
+  privateKey: process.env.VAPID_PRIVATE_KEY || 'X_m8c8JzL2N2K6k0B5r3v1x4z7f9h2j5m8p1s4v7y0A'
 };
 
 webpush.setVapidDetails(
@@ -32,6 +33,11 @@ webpush.setVapidDetails(
   vapidKeys.privateKey
 );
 
+// State Stores
+const typingUsers = new Map();
+const onlineUsers = new Map();
+
+// BASE ROUTE
 app.get('/', (req, res) => {
   res.send('RETRO API is online');
 });
@@ -169,8 +175,7 @@ app.post('/api/users/profile', async (req, res) => {
   }
 });
 
-
-// 4. GET SINGLE USER ENDPOINT (Newly Added)
+// 4. GET SINGLE USER ENDPOINT
 app.get('/api/users/:username', async (req, res) => {
   try {
     const { username } = req.params;
@@ -197,7 +202,7 @@ app.get('/api/users/:username', async (req, res) => {
   }
 });
 
-// 5. GET ALL USERS ENDPOINT (Updated select to return all columns)
+// 5. GET ALL USERS ENDPOINT
 app.get('/api/users', async (req, res) => {
   try {
     const { data, error } = await supabase
@@ -337,38 +342,49 @@ app.post('/api/messages', async (req, res) => {
   }
 });
 
-// 9. DELETE USER & ASSOCIATED MESSAGES ENDPOINT
+// 9. COMPLETE DELETE USER ENDPOINT
 app.delete('/api/users/:username', async (req, res) => {
   try {
     const { username } = req.params;
     const cleanUsername = username.trim();
+    const userEmail = `${cleanUsername.toLowerCase()}@retro.app`;
 
+    // A. Delete Push Subscriptions
     await supabase
       .from('subscriptions')
       .delete()
       .eq('username', cleanUsername.toLowerCase());
 
+    // B. Delete Messages
     const { error: msgError } = await supabase
       .from('messages')
       .delete()
       .or(`sender_username.eq.${cleanUsername},receiver_username.eq.${cleanUsername}`);
 
-    if (msgError) {
-      console.error('Error deleting user messages:', msgError.message);
-    }
+    if (msgError) console.error('Error deleting user messages:', msgError.message);
 
+    // C. Delete Public User Record
     const { error: userError } = await supabase
       .from('users')
       .delete()
       .eq('username', cleanUsername);
 
-    if (userError) {
-      console.error('Error deleting user record:', userError.message);
-      return res.status(400).json({ error: userError.message });
+    if (userError) console.error('Error deleting user record:', userError.message);
+
+    // D. Delete Account from Supabase Auth System
+    if (supabase.auth.admin) {
+      const { data: authData, error: listError } = await supabase.auth.admin.listUsers();
+      if (!listError && authData && authData.users) {
+        const targetAuthUser = authData.users.find(u => u.email === userEmail);
+        if (targetAuthUser) {
+          const { error: authDeleteErr } = await supabase.auth.admin.deleteUser(targetAuthUser.id);
+          if (authDeleteErr) console.error('Error purging auth user:', authDeleteErr.message);
+        }
+      }
     }
 
     return res.status(200).json({ 
-      message: `User '${cleanUsername}' and all associated chat logs deleted successfully.` 
+      message: `User '${cleanUsername}' and all associated records permanently removed.` 
     });
   } catch (err) {
     console.error('Delete User Error:', err);
@@ -376,9 +392,7 @@ app.delete('/api/users/:username', async (req, res) => {
   }
 });
 
-// 10. TYPING INDICATOR REAL-TIME STORE
-const typingUsers = new Map();
-
+// 10. TYPING INDICATOR ENDPOINTS
 app.post('/api/typing', (req, res) => {
   const { sender, receiver, isTyping } = req.body;
   if (!sender || !receiver) return res.status(400).json({ error: 'Missing parameters' });
@@ -401,13 +415,7 @@ app.get('/api/typing/:sender/:receiver', (req, res) => {
   res.json({ isTyping: false });
 });
 
-app.listen(PORT, () => {
-  console.log(`RETRO backend listening on port ${PORT}`);
-});
-// Store for active users (Username -> Last Active Timestamp)
-const onlineUsers = new Map();
-
-// 1. Send Heartbeat (Called by frontend every 15–30 seconds)
+// 11. ONLINE STATUS & HEARTBEAT
 app.post('/api/heartbeat', (req, res) => {
   const { username } = req.body;
   if (!username) return res.status(400).json({ error: 'Username required' });
@@ -416,13 +424,14 @@ app.post('/api/heartbeat', (req, res) => {
   res.json({ success: true });
 });
 
-// 2. Check Online Status for Target User
 app.get('/api/online-status/:username', (req, res) => {
   const target = req.params.username.trim().toLowerCase();
   const lastActive = onlineUsers.get(target);
 
-  // Consider online if active within the last 45 seconds
   const isOnline = lastActive && (Date.now() - lastActive < 45000);
-
   res.json({ online: Boolean(isOnline) });
+});
+
+app.listen(PORT, () => {
+  console.log(`RETRO backend listening on port ${PORT}`);
 });
