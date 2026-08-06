@@ -431,6 +431,316 @@ app.get('/api/online-status/:username', (req, res) => {
   const isOnline = lastActive && (Date.now() - lastActive < 45000);
   res.json({ online: Boolean(isOnline) });
 });
+// ==========================================
+// GROUP CHAT ENDPOINTS
+// ==========================================
+
+// 1. CREATE GROUP
+app.post('/api/groups', async (req, res) => {
+  const { name, avatar, created_by, members } = req.body;
+
+  if (!name || !created_by) {
+    return res.status(400).json({ error: 'Group name and creator are required.' });
+  }
+
+  try {
+    // Insert new group
+    const { data: group, error: groupError } = await supabase
+      .from('groups')
+      .insert([{ name, avatar: avatar || null, created_by }])
+      .select()
+      .single();
+
+    if (groupError) throw groupError;
+
+    // Prepare members array (creator is 'admin', others are 'member')
+    const uniqueMembers = Array.from(new Set([created_by, ...(members || [])]));
+    const memberRows = uniqueMembers.map(username => ({
+      group_id: group.id,
+      username,
+      role: username === created_by ? 'admin' : 'member'
+    }));
+
+    // Insert group members
+    const { error: membersError } = await supabase
+      .from('group_members')
+      .insert(memberRows);
+
+    if (membersError) throw membersError;
+
+    // Insert initial system message
+    await supabase.from('group_messages').insert([{
+      group_id: group.id,
+      sender_username: 'SYSTEM',
+      content: `@${created_by} created the group "${name}"`
+    }]);
+
+    res.status(201).json({ success: true, group });
+  } catch (err) {
+    console.error('Error creating group:', err);
+    res.status(500).json({ error: 'Failed to create group.' });
+  }
+});
+
+// 2. GET GROUPS FOR A SPECIFIC USER (Inbox List)
+app.get('/api/groups/user/:username', async (req, res) => {
+  const { username } = req.params;
+
+  try {
+    // Get all group_ids where user is a member
+    const { data: memberOf, error: memberError } = await supabase
+      .from('group_members')
+      .select('group_id')
+      .eq('username', username);
+
+    if (memberError) throw memberError;
+
+    if (!memberOf || memberOf.length === 0) {
+      return res.json({ groups: [] });
+    }
+
+    const groupIds = memberOf.map(m => m.group_id);
+
+    // Fetch details for those groups
+    const { data: groups, error: groupError } = await supabase
+      .from('groups')
+      .select('*')
+      .in('id', groupIds)
+      .order('created_at', { ascending: false });
+
+    if (groupError) throw groupError;
+
+    res.json({ groups });
+  } catch (err) {
+    console.error('Error fetching user groups:', err);
+    res.status(500).json({ error: 'Failed to fetch groups.' });
+  }
+});
+
+// 3. GET GROUP METADATA & MEMBERS
+app.get('/api/groups/:groupId', async (req, res) => {
+  const { groupId } = req.params;
+
+  try {
+    const { data: group, error: groupError } = await supabase
+      .from('groups')
+      .select('*')
+      .eq('id', groupId)
+      .single();
+
+    if (groupError) throw groupError;
+
+    const { data: members, error: membersError } = await supabase
+      .from('group_members')
+      .select('id, username, role, joined_at')
+      .eq('group_id', groupId)
+      .order('joined_at', { ascending: true });
+
+    if (membersError) throw membersError;
+
+    res.json({ group, members });
+  } catch (err) {
+    console.error('Error fetching group details:', err);
+    res.status(500).json({ error: 'Failed to fetch group details.' });
+  }
+});
+
+// 4. GET GROUP MESSAGES (Filters out expired messages)
+app.get('/api/groups/:groupId/messages', async (req, res) => {
+  const { groupId } = req.params;
+
+  try {
+    const now = new Date().toISOString();
+
+    const { data: messages, error } = await supabase
+      .from('group_messages')
+      .select('*')
+      .eq('group_id', groupId)
+      .or(`expires_at.is.null,expires_at.gt.${now}`)
+      .order('created_at', { ascending: true });
+
+    if (error) throw error;
+
+    res.json({ messages });
+  } catch (err) {
+    console.error('Error fetching group messages:', err);
+    res.status(500).json({ error: 'Failed to fetch group messages.' });
+  }
+});
+
+// 5. POST A GROUP MESSAGE (Text & Picture with expiry support)
+app.post('/api/groups/:groupId/messages', async (req, res) => {
+  const { groupId } = req.params;
+  const { sender_username, content, image_url, duration } = req.body;
+
+  if (!sender_username || (!content && !image_url)) {
+    return res.status(400).json({ error: 'Sender and content or image are required.' });
+  }
+
+  try {
+    let expires_at = null;
+    if (duration && duration > 0) {
+      expires_at = new Date(Date.now() + duration * 1000).toISOString();
+    }
+
+    const { data: message, error } = await supabase
+      .from('group_messages')
+      .insert([{
+        group_id: groupId,
+        sender_username,
+        content: content || '',
+        image_url: image_url || null,
+        expires_at
+      }])
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    res.status(201).json({ success: true, message });
+  } catch (err) {
+    console.error('Error posting group message:', err);
+    res.status(500).json({ error: 'Failed to post message.' });
+  }
+});
+
+// 6. UPDATE GROUP DETAILS (Admin Only)
+app.patch('/api/groups/:groupId', async (req, res) => {
+  const { groupId } = req.params;
+  const { requester, name, avatar } = req.body;
+
+  try {
+    // Verify admin privileges
+    const { data: member, error: memberError } = await supabase
+      .from('group_members')
+      .select('role')
+      .eq('group_id', groupId)
+      .eq('username', requester)
+      .single();
+
+    if (memberError || !member || member.role !== 'admin') {
+      return res.status(403).json({ error: 'Only admins can update group details.' });
+    }
+
+    const updates = {};
+    if (name) updates.name = name;
+    if (avatar !== undefined) updates.avatar = avatar;
+
+    const { data: group, error: updateError } = await supabase
+      .from('groups')
+      .update(updates)
+      .eq('id', groupId)
+      .select()
+      .single();
+
+    if (updateError) throw updateError;
+
+    // Post system notification
+    if (name) {
+      await supabase.from('group_messages').insert([{
+        group_id: groupId,
+        sender_username: 'SYSTEM',
+        content: `@${requester} updated group name to "${name}"`
+      }]);
+    }
+
+    res.json({ success: true, group });
+  } catch (err) {
+    console.error('Error updating group:', err);
+    res.status(500).json({ error: 'Failed to update group.' });
+  }
+});
+
+// 7. ADD MEMBERS TO GROUP (Admin Only)
+app.post('/api/groups/:groupId/members', async (req, res) => {
+  const { groupId } = req.params;
+  const { requester, newMembers } = req.body; // newMembers = Array of usernames
+
+  try {
+    // Check admin rights
+    const { data: member } = await supabase
+      .from('group_members')
+      .select('role')
+      .eq('group_id', groupId)
+      .eq('username', requester)
+      .single();
+
+    if (!member || member.role !== 'admin') {
+      return res.status(403).json({ error: 'Only admins can add members.' });
+    }
+
+    const rows = newMembers.map(username => ({
+      group_id: groupId,
+      username,
+      role: 'member'
+    }));
+
+    const { error } = await supabase.from('group_members').insert(rows);
+    if (error) throw error;
+
+    // Log system message
+    const addedList = newMembers.map(m => `@${m}`).join(', ');
+    await supabase.from('group_messages').insert([{
+      group_id: groupId,
+      sender_username: 'SYSTEM',
+      content: `@${requester} added ${addedList}`
+    }]);
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error adding members:', err);
+    res.status(500).json({ error: 'Failed to add members.' });
+  }
+});
+
+// 8. REMOVE MEMBER OR LEAVE GROUP
+app.delete('/api/groups/:groupId/members/:targetUsername', async (req, res) => {
+  const { groupId, targetUsername } = req.params;
+  const { requester } = req.body; // Username of person making the request
+
+  try {
+    const isSelfLeave = requester === targetUsername;
+
+    // If removing someone else, requester MUST be admin
+    if (!isSelfLeave) {
+      const { data: adminCheck } = await supabase
+        .from('group_members')
+        .select('role')
+        .eq('group_id', groupId)
+        .eq('username', requester)
+        .single();
+
+      if (!adminCheck || adminCheck.role !== 'admin') {
+        return res.status(403).json({ error: 'Only admins can remove members.' });
+      }
+    }
+
+    // Delete from group_members
+    const { error: deleteError } = await supabase
+      .from('group_members')
+      .delete()
+      .eq('group_id', groupId)
+      .eq('username', targetUsername);
+
+    if (deleteError) throw deleteError;
+
+    // Log system message
+    const systemText = isSelfLeave
+      ? `@${targetUsername} left the group`
+      : `@${requester} removed @${targetUsername}`;
+
+    await supabase.from('group_messages').insert([{
+      group_id: groupId,
+      sender_username: 'SYSTEM',
+      content: systemText
+    }]);
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Error removing member:', err);
+    res.status(500).json({ error: 'Failed to remove member.' });
+  }
+});
 
 app.listen(PORT, () => {
   console.log(`RETRO backend listening on port ${PORT}`);
