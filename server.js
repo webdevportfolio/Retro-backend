@@ -442,3 +442,46 @@ app.get('/api/online-status/:username', (req, res) => {
   const isOnline = lastSeen && (Date.now() - lastSeen < 30000); // 30s threshold
   res.json({ online: !!isOnline });
 });
+// ==========================================
+// USER PROFILE PICTURE STORAGE & ENDPOINTS
+// ==========================================
+
+// In-memory store (Replace with your Database model if using MongoDB/PostgreSQL)
+const userProfiles = new Map();
+
+// 1. Endpoint: Update or Save Profile Picture
+app.post('/api/users/pfp', (req, res) => {
+  const { username, pfpUrl } = req.body;
+  if (!username || !pfpUrl) {
+    return res.status(400).json({ error: 'Username and pfpUrl are required' });
+  }
+
+  const cleanName = username.toLowerCase().trim().replace('@', '');
+  const existing = userProfiles.get(cleanName) || { username: cleanName };
+  
+  // Save/Update the user profile
+  userProfiles.set(cleanName, { ...existing, pfpUrl });
+
+  res.json({ success: true, pfpUrl });
+});
+
+// 2. Endpoint: Get a specific user's profile (Polled directly by chat.html)
+app.get('/api/users/:username', (req, res) => {
+  const cleanName = req.params.username.toLowerCase().trim().replace('@', '');
+  const user = userProfiles.get(cleanName);
+
+  if (!user) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+
+  res.json({
+    username: cleanName,
+    pfpUrl: user.pfpUrl || null
+  });
+});
+
+// 3. Endpoint: Get all users (Fallback search)
+app.get('/api/users', (req, res) => {
+  const users = Array.from(userProfiles.values());
+  res.json(users);
+});
