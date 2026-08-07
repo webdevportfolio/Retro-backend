@@ -5,8 +5,13 @@ const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 
-// Middleware
-app.use(cors());
+// Middleware & Explicit CORS
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+app.options('*', cors());
 app.use(express.json({ limit: '50mb' }));
 
 // ==========================================
@@ -16,20 +21,36 @@ const SUPABASE_URL = process.env.SUPABASE_URL || 'https://your-supabase-url.supa
 const SUPABASE_KEY = process.env.SUPABASE_KEY || 'your-supabase-anon-key';
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// Auto-generate fallback keys if process.env variables are missing or invalid
-const generatedKeys = webpush.generateVAPIDKeys();
+// VAPID Setup with Safe Fallback Handling
+let publicVapidKey = process.env.VAPID_PUBLIC_KEY;
+let privateVapidKey = process.env.VAPID_PRIVATE_KEY;
 
-const publicVapidKey = process.env.VAPID_PUBLIC_KEY || generatedKeys.publicKey;
-const privateVapidKey = process.env.VAPID_PRIVATE_KEY || generatedKeys.privateKey;
+if (!publicVapidKey || !privateVapidKey) {
+  const generatedKeys = webpush.generateVAPIDKeys();
+  publicVapidKey = publicVapidKey || generatedKeys.publicKey;
+  privateVapidKey = privateVapidKey || generatedKeys.privateKey;
+}
 
-webpush.setVapidDetails(
-  'mailto:mustaphaadegboyega801@gmail.com',
-  publicVapidKey,
-  privateVapidKey
-);
+try {
+  webpush.setVapidDetails(
+    'mailto:mustaphaadegboyega801@gmail.com',
+    publicVapidKey,
+    privateVapidKey
+  );
+} catch (e) {
+  console.error('VAPID setup error, generating fresh fallback pair:', e.message);
+  const generatedKeys = webpush.generateVAPIDKeys();
+  publicVapidKey = generatedKeys.publicKey;
+  privateVapidKey = generatedKeys.privateKey;
+  webpush.setVapidDetails(
+    'mailto:mustaphaadegboyega801@gmail.com',
+    publicVapidKey,
+    privateVapidKey
+  );
+}
 
 // ==========================================
-// 2. HEALTH CHECK & SYSTEM
+// 2. HEALTH CHECK
 // ==========================================
 app.get('/', (req, res) => {
   res.status(200).send('Retro Backend API is live and healthy!');
@@ -61,7 +82,7 @@ const handleSignup = async (req, res) => {
   }
 };
 
-// Accept both /api/signup and /api/register
+// Handle both route names seamlessly
 app.post('/api/signup', handleSignup);
 app.post('/api/register', handleSignup);
 
@@ -91,7 +112,6 @@ app.post('/api/login', async (req, res) => {
     res.status(500).json({ error: 'Login failed.' });
   }
 });
-
 
 // ==========================================
 // 4. PUSH NOTIFICATION ENDPOINTS & HELPER
@@ -142,7 +162,7 @@ async function sendPushNotification(targetUsername, payload) {
 }
 
 // ==========================================
-// 5. DIRECT MESSAGES & CONVERSATIONS (DMs)
+// 5. DIRECT MESSAGES & CONVERSATIONS
 // ==========================================
 app.get('/api/conversations', async (req, res) => {
   const username = (req.query.username || '').trim().replace('@', '');
@@ -342,6 +362,12 @@ app.post('/api/groups/:groupId/messages', async (req, res) => {
     console.error('Error posting group message:', err);
     res.status(500).json({ error: 'Failed to post message.' });
   }
+});
+
+// Global Error Catching Middleware (Prevents server crashes on bad requests)
+app.use((err, req, res, next) => {
+  console.error('Unhandled server error:', err);
+  res.status(500).json({ error: 'An unexpected internal server error occurred.' });
 });
 
 // ==========================================
