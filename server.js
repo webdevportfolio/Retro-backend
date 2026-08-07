@@ -17,7 +17,7 @@ const SUPABASE_KEY = process.env.SUPABASE_KEY || 'your-supabase-anon-key';
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // VAPID Keys Setup for Push Notifications
-const publicVapidKey = process.env.VAPID_PUBLIC_KEY || 'BNx8J4pL9V1zK3mS5W7qR0tJ8kC2vB1nQ0mX8pL3vN5mP1wS9zR4tJ8kC2vB1nQ0mX8pL3vN5mP1wS9zR4tJ8A';
+const publicVapidKey = process.env.VAPID_PUBLIC_KEY || 'BAK3sP9lQ2vX8mN4rW1zY7uI0oP3rS6tU9vW2xY5zA8bC1dE4fG7hI0jK3lM6nO9pQ2rS5tU8vW1xY4zA7bC0dE';
 const privateVapidKey = process.env.VAPID_PRIVATE_KEY || 'xK8mP2vN5wS9zR4tJ8kC2vB1nQ0mX8pL3vN5mP1wS90';
 
 webpush.setVapidDetails(
@@ -25,6 +25,7 @@ webpush.setVapidDetails(
   publicVapidKey,
   privateVapidKey
 );
+
 
 // ==========================================
 // 2. HEALTH CHECK & SYSTEM
