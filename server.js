@@ -17,8 +17,8 @@ const SUPABASE_KEY = process.env.SUPABASE_KEY || 'your-supabase-anon-key';
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // VAPID Keys Setup for Push Notifications
-const publicVapidKey = process.env.VAPID_PUBLIC_KEY || 'BAK3sP9lQ2vX8mN4rW1zY7uI0oP3rS6tU9vW2xY5zA8bC1dE4fG7hI0jK3lM6nO9pQ2rS5tU8vW1xY4zA7bC0dE';
-const privateVapidKey = process.env.VAPID_PRIVATE_KEY || 'xK8mP2vN5wS9zR4tJ8kC2vB1nQ0mX8pL3vN5mP1wS90';
+const publicVapidKey = process.env.VAPID_PUBLIC_KEY || 'BO9aG3T9z8ki5KI6ZeHtLHwg06RG_yziunfTI5pEvcKgr5X7YBoDWACFqsjplW88vJtS7tuJQ8rOZQlNX20GlTCNg';
+const privateVapidKey = process.env.VAPID_PRIVATE_KEY || 'ApJUHJviHhEKo1Zi_YAQoiwyX83HEOqTFLKTjb2sGio';
 
 webpush.setVapidDetails(
   'mailto:mustaphaadegboyega801@gmail.com',
