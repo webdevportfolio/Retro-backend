@@ -399,3 +399,46 @@ app.use((err, req, res, next) => {
 // ==========================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+// ==========================================
+// IN-MEMORY STATE FOR PRESENCE & TYPING
+// ==========================================
+const typingState = new Map();   // Stores typing status per user pair
+const userHeartbeats = new Map(); // Stores active heartbeat timestamps
+
+// Endpoint: Send typing status
+app.post('/api/typing', (req, res) => {
+  const { sender, receiver, isTyping } = req.body;
+  if (sender && receiver) {
+    const key = `${sender.toLowerCase().trim()}_${receiver.toLowerCase().trim()}`;
+    typingState.set(key, { isTyping: !!isTyping, timestamp: Date.now() });
+  }
+  res.json({ success: true });
+});
+
+// Endpoint: Poll typing status
+app.get('/api/typing/:sender/:receiver', (req, res) => {
+  const { sender, receiver } = req.params;
+  const key = `${sender.toLowerCase().trim()}_${receiver.toLowerCase().trim()}`;
+  const state = typingState.get(key);
+  if (state && (Date.now() - state.timestamp < 4000)) {
+    return res.json({ isTyping: state.isTyping });
+  }
+  res.json({ isTyping: false });
+});
+
+// Endpoint: Receive presence heartbeat
+app.post('/api/heartbeat', (req, res) => {
+  const { username } = req.body;
+  if (username) {
+    userHeartbeats.set(username.toLowerCase().trim(), Date.now());
+  }
+  res.json({ success: true });
+});
+
+// Endpoint: Get online status indicator
+app.get('/api/online-status/:username', (req, res) => {
+  const { username } = req.params;
+  const lastSeen = userHeartbeats.get(username.toLowerCase().trim());
+  const isOnline = lastSeen && (Date.now() - lastSeen < 30000); // 30s threshold
+  res.json({ online: !!isOnline });
+});
