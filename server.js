@@ -38,7 +38,7 @@ app.get('/', (req, res) => {
 // ==========================================
 // 3. AUTHENTICATION ENDPOINTS
 // ==========================================
-app.post('/api/signup', async (req, res) => {
+const handleSignup = async (req, res) => {
   const { username, password } = req.body;
   const cleanUsername = (username || '').trim().replace('@', '');
 
@@ -59,7 +59,11 @@ app.post('/api/signup', async (req, res) => {
     console.error('Error during signup:', err);
     res.status(500).json({ error: err.message || 'Failed to create account.' });
   }
-});
+};
+
+// Accept both /api/signup and /api/register
+app.post('/api/signup', handleSignup);
+app.post('/api/register', handleSignup);
 
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
@@ -87,6 +91,7 @@ app.post('/api/login', async (req, res) => {
     res.status(500).json({ error: 'Login failed.' });
   }
 });
+
 
 // ==========================================
 // 4. PUSH NOTIFICATION ENDPOINTS & HELPER
