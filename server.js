@@ -17,8 +17,8 @@ const SUPABASE_KEY = process.env.SUPABASE_KEY || 'your-supabase-anon-key';
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // VAPID Keys Setup for Push Notifications
-const publicVapidKey = process.env.VAPID_PUBLIC_KEY || 'BH3t9s8ki5KI6ZeHtLHwg06RG_yziunfTI5pEvcKgr5X7YBoDWACFqsjplW88vJtS7tuJQ8rOZQlNX20GlTCNg';
-const privateVapidKey = process.env.VAPID_PRIVATE_KEY || 'ApJUHJviHhEKo1Zi_YAQoiwyX83HEOqTFLKTjb2sGio';
+const publicVapidKey = process.env.VAPID_PUBLIC_KEY || 'BNx8J4pL9V1zK3mS5W7qR0tJ8kC2vB1nQ0mX8pL3vN5mP1wS9zR4tJ8kC2vB1nQ0mX8pL3vN5mP1wS9zR4tJ8A';
+const privateVapidKey = process.env.VAPID_PRIVATE_KEY || 'xK8mP2vN5wS9zR4tJ8kC2vB1nQ0mX8pL3vN5mP1wS90';
 
 webpush.setVapidDetails(
   'mailto:mustaphaadegboyega801@gmail.com',
@@ -236,7 +236,8 @@ app.post('/api/messages', async (req, res) => {
       title: `@${cleanSender}`,
       body: content || (image_url ? 'Sent an image' : 'New message'),
       icon: '/icon.png',
-      url: `/chat.html?user=${cleanSender}`
+      url: `/chat.html?user=${cleanSender}`,
+      badgeCount: 1
     });
 
     res.status(201).json({ success: true, message });
