@@ -49,6 +49,10 @@ try {
   );
 }
 
+// In-memory volatile state for typing & presence
+const typingState = new Map();
+const userHeartbeats = new Map();
+
 // ==========================================
 // 2. HEALTH CHECK
 // ==========================================
@@ -119,22 +123,22 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// Fetch All Users (for Chat Code Search)
+// Fetch All Users (With Profile Pictures)
 app.get('/api/users', async (req, res) => {
   try {
     const { data: users, error } = await supabase
       .from('users')
-      .select('username');
+      .select('username, profile_picture');
 
     if (error) throw error;
-    res.json(users ? users.map(u => u.username) : []);
+    res.json(users || []);
   } catch (err) {
     console.error('Error fetching users:', err);
     res.status(500).json({ error: 'Failed to fetch users.' });
   }
 });
 
-// Fetch Single User Profile (for profile.html)
+// Fetch Single User Profile
 app.get('/api/users/:username', async (req, res) => {
   const { username } = req.params;
   const cleanUser = (username || '').trim().replace('@', '');
@@ -150,7 +154,10 @@ app.get('/api/users/:username', async (req, res) => {
       return res.status(404).json({ error: 'User not found.' });
     }
 
-    res.json(user);
+    res.json({
+      ...user,
+      pfpUrl: user.profile_picture || user.pfp || null
+    });
   } catch (err) {
     console.error('Error fetching user profile:', err);
     res.status(500).json({ error: 'Failed to fetch user profile.' });
@@ -158,15 +165,14 @@ app.get('/api/users/:username', async (req, res) => {
 });
 
 // Update Profile Picture
-app.post('/api/users/profile', async (req, res) => {
-  const { username, profile_picture, pfp } = req.body;
+const handlePfpUpdate = async (req, res) => {
+  const { username, profile_picture, pfp, pfpUrl } = req.body;
   const cleanUser = (username || '').trim().replace('@', '');
+  const pfpData = profile_picture || pfp || pfpUrl;
 
-  if (!cleanUser) {
-    return res.status(400).json({ error: 'Username is required.' });
+  if (!cleanUser || !pfpData) {
+    return res.status(400).json({ error: 'Username and profile picture are required.' });
   }
-
-  const pfpData = profile_picture || pfp;
 
   try {
     const { error } = await supabase
@@ -176,12 +182,15 @@ app.post('/api/users/profile', async (req, res) => {
 
     if (error) throw error;
 
-    res.json({ success: true, message: 'Profile updated successfully.' });
+    res.json({ success: true, message: 'Profile updated successfully.', pfpUrl: pfpData });
   } catch (err) {
     console.error('Error updating profile picture:', err);
     res.status(500).json({ error: 'Failed to update profile picture.' });
   }
-});
+};
+
+app.post('/api/users/profile', handlePfpUpdate);
+app.post('/api/users/pfp', handlePfpUpdate);
 
 // Delete Account
 app.delete('/api/users/:username', async (req, res) => {
@@ -294,7 +303,6 @@ app.get('/api/conversations', async (req, res) => {
   }
 });
 
-// Inbox metrics route endpoint: handles GET /api/messages/:username
 app.get('/api/messages/:username', async (req, res) => {
   const { username } = req.params;
   const cleanUser = (username || '').trim().replace('@', '');
@@ -344,14 +352,13 @@ app.get('/api/messages', async (req, res) => {
 });
 
 app.post('/api/messages', async (req, res) => {
-  const { sender_username, receiver_username, content, image_url, duration } = req.body;
+  const { sender_username, receiver_username, sender, receiver, content, image_url, duration } = req.body;
+  const cleanSender = (sender_username || sender || '').trim().replace('@', '');
+  const cleanReceiver = (receiver_username || receiver || '').trim().replace('@', '');
 
-  if (!sender_username || !receiver_username || (!content && !image_url)) {
+  if (!cleanSender || !cleanReceiver || (!content && !image_url)) {
     return res.status(400).json({ error: 'Sender, receiver, and content/image are required.' });
   }
-
-  const cleanSender = sender_username.trim().replace('@', '');
-  const cleanReceiver = receiver_username.trim().replace('@', '');
 
   try {
     let expires_at = null;
@@ -388,24 +395,9 @@ app.post('/api/messages', async (req, res) => {
   }
 });
 
-// Global Error Catching Middleware
-app.use((err, req, res, next) => {
-  console.error('Unhandled server error:', err);
-  res.status(500).json({ error: 'An unexpected internal server error occurred.' });
-});
-
 // ==========================================
-// 6. SERVER INITIALIZATION
+// 6. IN-MEMORY STATE FOR PRESENCE & TYPING
 // ==========================================
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-// ==========================================
-// IN-MEMORY STATE FOR PRESENCE & TYPING
-// ==========================================
-const typingState = new Map();   // Stores typing status per user pair
-const userHeartbeats = new Map(); // Stores active heartbeat timestamps
-
-// Endpoint: Send typing status
 app.post('/api/typing', (req, res) => {
   const { sender, receiver, isTyping } = req.body;
   if (sender && receiver) {
@@ -415,7 +407,6 @@ app.post('/api/typing', (req, res) => {
   res.json({ success: true });
 });
 
-// Endpoint: Poll typing status
 app.get('/api/typing/:sender/:receiver', (req, res) => {
   const { sender, receiver } = req.params;
   const key = `${sender.toLowerCase().trim()}_${receiver.toLowerCase().trim()}`;
@@ -426,7 +417,6 @@ app.get('/api/typing/:sender/:receiver', (req, res) => {
   res.json({ isTyping: false });
 });
 
-// Endpoint: Receive presence heartbeat
 app.post('/api/heartbeat', (req, res) => {
   const { username } = req.body;
   if (username) {
@@ -435,53 +425,19 @@ app.post('/api/heartbeat', (req, res) => {
   res.json({ success: true });
 });
 
-// Endpoint: Get online status indicator
 app.get('/api/online-status/:username', (req, res) => {
   const { username } = req.params;
   const lastSeen = userHeartbeats.get(username.toLowerCase().trim());
-  const isOnline = lastSeen && (Date.now() - lastSeen < 30000); // 30s threshold
+  const isOnline = lastSeen && (Date.now() - lastSeen < 30000);
   res.json({ online: !!isOnline });
 });
-// ==========================================
-// USER PROFILE PICTURE STORAGE & ENDPOINTS
-// ==========================================
 
-// In-memory store (Replace with your Database model if using MongoDB/PostgreSQL)
-const userProfiles = new Map();
-
-// 1. Endpoint: Update or Save Profile Picture
-app.post('/api/users/pfp', (req, res) => {
-  const { username, pfpUrl } = req.body;
-  if (!username || !pfpUrl) {
-    return res.status(400).json({ error: 'Username and pfpUrl are required' });
-  }
-
-  const cleanName = username.toLowerCase().trim().replace('@', '');
-  const existing = userProfiles.get(cleanName) || { username: cleanName };
-  
-  // Save/Update the user profile
-  userProfiles.set(cleanName, { ...existing, pfpUrl });
-
-  res.json({ success: true, pfpUrl });
+// Global Error Handler
+app.use((err, req, res, next) => {
+  console.error('Unhandled server error:', err);
+  res.status(500).json({ error: 'An unexpected internal server error occurred.' });
 });
 
-// 2. Endpoint: Get a specific user's profile (Polled directly by chat.html)
-app.get('/api/users/:username', (req, res) => {
-  const cleanName = req.params.username.toLowerCase().trim().replace('@', '');
-  const user = userProfiles.get(cleanName);
-
-  if (!user) {
-    return res.status(404).json({ error: 'User not found' });
-  }
-
-  res.json({
-    username: cleanName,
-    pfpUrl: user.pfpUrl || null
-  });
-});
-
-// 3. Endpoint: Get all users (Fallback search)
-app.get('/api/users', (req, res) => {
-  const users = Array.from(userProfiles.values());
-  res.json(users);
-});
+// Server Initialization
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
