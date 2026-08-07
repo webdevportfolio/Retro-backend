@@ -16,9 +16,11 @@ const SUPABASE_URL = process.env.SUPABASE_URL || 'https://your-supabase-url.supa
 const SUPABASE_KEY = process.env.SUPABASE_KEY || 'your-supabase-anon-key';
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// VAPID Keys Setup for Push Notifications
-const publicVapidKey = process.env.VAPID_PUBLIC_KEY || 'BOHq50bPJkL5FqXl1x0EMak195x0ATvErlBIDS0poXniqVml8AJ0mmMt2QkA33qI9_TEblc1JqfvkCRmikgNVM';
-const privateVapidKey = process.env.VAPID_PRIVATE_KEY || 'ccG6X1r4G9LN7pomy23mRHKQ6_DsnW0C4dcF5u9spgY';
+// Auto-generate fallback keys if process.env variables are missing or invalid
+const generatedKeys = webpush.generateVAPIDKeys();
+
+const publicVapidKey = process.env.VAPID_PUBLIC_KEY || generatedKeys.publicKey;
+const privateVapidKey = process.env.VAPID_PRIVATE_KEY || generatedKeys.privateKey;
 
 webpush.setVapidDetails(
   'mailto:mustaphaadegboyega801@gmail.com',
@@ -26,13 +28,9 @@ webpush.setVapidDetails(
   privateVapidKey
 );
 
-
-
-
 // ==========================================
 // 2. HEALTH CHECK & SYSTEM
 // ==========================================
-// Prevents 404s on UptimeRobot & keeps backend awake
 app.get('/', (req, res) => {
   res.status(200).send('Retro Backend API is live and healthy!');
 });
@@ -121,7 +119,6 @@ app.post('/api/subscribe', async (req, res) => {
   }
 });
 
-// Helper Function to dispatch web push notifications
 async function sendPushNotification(targetUsername, payload) {
   try {
     const { data, error } = await supabase
@@ -234,7 +231,6 @@ app.post('/api/messages', async (req, res) => {
 
     if (error) throw error;
 
-    // Trigger Push Notification to Receiver
     sendPushNotification(cleanReceiver, {
       title: `@${cleanSender}`,
       body: content || (image_url ? 'Sent an image' : 'New message'),
