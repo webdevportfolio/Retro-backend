@@ -76,7 +76,6 @@ const handleSignup = async (req, res) => {
 
     if (error) {
       console.error('Supabase insert error:', error);
-      // Handle existing username specifically
       if (error.code === '23505') {
         return res.status(400).json({ error: 'Username already taken.' });
       }
@@ -108,7 +107,7 @@ app.post('/api/login', async (req, res) => {
       .select('*')
       .eq('username', cleanUsername)
       .eq('password', password)
-      .maybeSingle(); // maybeSingle prevents throwing when user is not found
+      .maybeSingle();
 
     if (error || !user) {
       return res.status(401).json({ error: 'Invalid username or password.' });
@@ -121,6 +120,20 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
+// Fetch All Users (used for resolving Chat Codes)
+app.get('/api/users', async (req, res) => {
+  try {
+    const { data: users, error } = await supabase
+      .from('users')
+      .select('username');
+
+    if (error) throw error;
+    res.json(users ? users.map(u => u.username) : []);
+  } catch (err) {
+    console.error('Error fetching users:', err);
+    res.status(500).json({ error: 'Failed to fetch users.' });
+  }
+});
 
 // ==========================================
 // 4. PUSH NOTIFICATION ENDPOINTS & HELPER
@@ -210,6 +223,30 @@ app.get('/api/conversations', async (req, res) => {
   }
 });
 
+// Inbox messaging route endpoint: handles GET /api/messages/:username
+app.get('/api/messages/:username', async (req, res) => {
+  const { username } = req.params;
+  const cleanUser = (username || '').trim().replace('@', '');
+
+  if (!cleanUser) {
+    return res.status(400).json({ error: 'Username parameter is required.' });
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('direct_messages')
+      .select('*')
+      .or(`sender_username.eq.${cleanUser},receiver_username.eq.${cleanUser}`)
+      .order('created_at', { ascending: true });
+
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    console.error('Error fetching inbox messages:', err);
+    res.status(500).json({ error: 'Failed to fetch messages.' });
+  }
+});
+
 app.get('/api/messages', async (req, res) => {
   const { user1, user2 } = req.query;
   
@@ -280,107 +317,14 @@ app.post('/api/messages', async (req, res) => {
   }
 });
 
-// ==========================================
-// 6. GROUP ENDPOINTS
-// ==========================================
-app.get('/api/groups', async (req, res) => {
-  try {
-    const { data: groups, error } = await supabase
-      .from('groups')
-      .select('*');
-
-    if (error) throw error;
-    res.json({ groups: groups || [] });
-  } catch (err) {
-    console.error('Error fetching groups:', err);
-    res.status(500).json({ error: 'Failed to fetch groups.' });
-  }
-});
-
-app.get('/api/groups/:groupId', async (req, res) => {
-  const { groupId } = req.params;
-  try {
-    const { data: group, error: gErr } = await supabase
-      .from('groups')
-      .select('*')
-      .eq('id', groupId)
-      .single();
-
-    if (gErr) throw gErr;
-
-    const { data: members, error: mErr } = await supabase
-      .from('group_members')
-      .select('*')
-      .eq('group_id', groupId);
-
-    res.json({ group, members: members || [] });
-  } catch (err) {
-    console.error('Error fetching group metadata:', err);
-    res.status(500).json({ error: 'Failed to fetch group details.' });
-  }
-});
-
-app.get('/api/groups/:groupId/messages', async (req, res) => {
-  const { groupId } = req.params;
-  try {
-    const { data: messages, error } = await supabase
-      .from('group_messages')
-      .select('*')
-      .eq('group_id', groupId)
-      .order('created_at', { ascending: true });
-
-    if (error) throw error;
-    res.json({ messages: messages || [] });
-  } catch (err) {
-    console.error('Error fetching group messages:', err);
-    res.status(500).json({ error: 'Failed to fetch messages.' });
-  }
-});
-
-app.post('/api/groups/:groupId/messages', async (req, res) => {
-  const { groupId } = req.params;
-  const { sender, sender_username, content, image_url, duration } = req.body;
-  
-  const activeSender = sender_username || sender;
-
-  if (!activeSender || (!content && !image_url)) {
-    return res.status(400).json({ error: 'Sender and content or image are required.' });
-  }
-
-  try {
-    let expires_at = null;
-    if (duration && duration > 0) {
-      expires_at = new Date(Date.now() + duration * 1000).toISOString();
-    }
-
-    const { data: message, error } = await supabase
-      .from('group_messages')
-      .insert([{
-        group_id: groupId,
-        sender_username: activeSender.trim().replace('@', ''),
-        content: content || '',
-        image_url: image_url || null,
-        expires_at
-      }])
-      .select()
-      .single();
-
-    if (error) throw error;
-    res.status(201).json({ success: true, message });
-  } catch (err) {
-    console.error('Error posting group message:', err);
-    res.status(500).json({ error: 'Failed to post message.' });
-  }
-});
-
-// Global Error Catching Middleware (Prevents server crashes on bad requests)
+// Global Error Catching Middleware
 app.use((err, req, res, next) => {
   console.error('Unhandled server error:', err);
   res.status(500).json({ error: 'An unexpected internal server error occurred.' });
 });
 
 // ==========================================
-// 7. SERVER INITIALIZATION
+// 6. SERVER INITIALIZATION
 // ==========================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
