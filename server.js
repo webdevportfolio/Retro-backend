@@ -1,26 +1,41 @@
 const express = require('express');
 const cors = require('cors');
+const webpush = require('web-push');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
 
-// Enable CORS for all origins (or specify your GitHub Pages URL)
+// Middleware
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
+// ==========================================
+// 1. ENVIRONMENT & DATABASE SETUP
+// ==========================================
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://your-supabase-url.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_KEY || 'your-supabase-anon-key';
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
+// VAPID Keys Setup for Push Notifications
+const publicVapidKey = process.env.VAPID_PUBLIC_KEY || 'BH3t9s8ki5KI6ZeHtLHwg06RG_yziunfTI5pEvcKgr5X7YBoDWACFqsjplW88vJtS7tuJQ8rOZQlNX20GlTCNg';
+const privateVapidKey = process.env.VAPID_PRIVATE_KEY || 'ApJUHJviHhEKo1Zi_YAQoiwyX83HEOqTFLKTjb2sGio';
+
+webpush.setVapidDetails(
+  'mailto:mustaphaadegboyega801@gmail.com',
+  publicVapidKey,
+  privateVapidKey
+);
+
 // ==========================================
-// 0. HEALTH CHECK ROUTE (Fixes UptimeRobot & Blank Screen)
+// 2. HEALTH CHECK & SYSTEM
 // ==========================================
+// Prevents 404s on UptimeRobot & keeps backend awake
 app.get('/', (req, res) => {
   res.status(200).send('Retro Backend API is live and healthy!');
 });
 
 // ==========================================
-// 1. AUTHENTICATION ENDPOINTS (Fixes Sign Up Screen)
+// 3. AUTHENTICATION ENDPOINTS
 // ==========================================
 app.post('/api/signup', async (req, res) => {
   const { username, password } = req.body;
@@ -73,7 +88,56 @@ app.post('/api/login', async (req, res) => {
 });
 
 // ==========================================
-// 2. GET USER CONVERSATIONS (INBOX DMs)
+// 4. PUSH NOTIFICATION ENDPOINTS & HELPER
+// ==========================================
+app.get('/api/vapid-public-key', (req, res) => {
+  res.json({ publicKey: publicVapidKey });
+});
+
+app.post('/api/subscribe', async (req, res) => {
+  const { username, subscription } = req.body;
+  const cleanUsername = (username || '').trim().replace('@', '');
+
+  if (!cleanUsername || !subscription) {
+    return res.status(400).json({ error: 'Username and subscription object are required.' });
+  }
+
+  try {
+    const { error } = await supabase
+      .from('push_subscriptions')
+      .upsert({ 
+        username: cleanUsername.toLowerCase(), 
+        subscription: JSON.stringify(subscription) 
+      }, { onConflict: 'username' });
+
+    if (error) throw error;
+    res.status(201).json({ success: true, message: 'Push subscription saved.' });
+  } catch (err) {
+    console.error('Error saving subscription:', err);
+    res.status(500).json({ error: 'Failed to save subscription.' });
+  }
+});
+
+// Helper Function to dispatch web push notifications
+async function sendPushNotification(targetUsername, payload) {
+  try {
+    const { data, error } = await supabase
+      .from('push_subscriptions')
+      .select('subscription')
+      .eq('username', targetUsername.toLowerCase())
+      .single();
+
+    if (error || !data) return;
+
+    const subscription = JSON.parse(data.subscription);
+    await webpush.sendNotification(subscription, JSON.stringify(payload));
+  } catch (err) {
+    console.error(`Failed to send push notification to ${targetUsername}:`, err);
+  }
+}
+
+// ==========================================
+// 5. DIRECT MESSAGES & CONVERSATIONS (DMs)
 // ==========================================
 app.get('/api/conversations', async (req, res) => {
   const username = (req.query.username || '').trim().replace('@', '');
@@ -112,8 +176,78 @@ app.get('/api/conversations', async (req, res) => {
   }
 });
 
+app.get('/api/messages', async (req, res) => {
+  const { user1, user2 } = req.query;
+  
+  if (!user1 || !user2) {
+    return res.status(400).json({ error: 'Both user1 and user2 query parameters are required.' });
+  }
+
+  const u1 = user1.trim().replace('@', '');
+  const u2 = user2.trim().replace('@', '');
+
+  try {
+    const { data, error } = await supabase
+      .from('direct_messages')
+      .select('*')
+      .or(`and(sender_username.eq.${u1},receiver_username.eq.${u2}),and(sender_username.eq.${u2},receiver_username.eq.${u1})`)
+      .order('created_at', { ascending: true });
+
+    if (error) throw error;
+    res.json({ messages: data || [] });
+  } catch (err) {
+    console.error('Error fetching messages:', err);
+    res.status(500).json({ error: 'Failed to fetch messages.' });
+  }
+});
+
+app.post('/api/messages', async (req, res) => {
+  const { sender_username, receiver_username, content, image_url, duration } = req.body;
+
+  if (!sender_username || !receiver_username || (!content && !image_url)) {
+    return res.status(400).json({ error: 'Sender, receiver, and content/image are required.' });
+  }
+
+  const cleanSender = sender_username.trim().replace('@', '');
+  const cleanReceiver = receiver_username.trim().replace('@', '');
+
+  try {
+    let expires_at = null;
+    if (duration && duration > 0) {
+      expires_at = new Date(Date.now() + duration * 1000).toISOString();
+    }
+
+    const { data: message, error } = await supabase
+      .from('direct_messages')
+      .insert([{
+        sender_username: cleanSender,
+        receiver_username: cleanReceiver,
+        content: content || '',
+        image_url: image_url || null,
+        expires_at
+      }])
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    // Trigger Push Notification to Receiver
+    sendPushNotification(cleanReceiver, {
+      title: `@${cleanSender}`,
+      body: content || (image_url ? 'Sent an image' : 'New message'),
+      icon: '/icon.png',
+      url: `/chat.html?user=${cleanSender}`
+    });
+
+    res.status(201).json({ success: true, message });
+  } catch (err) {
+    console.error('Error sending message:', err);
+    res.status(500).json({ error: 'Failed to send message.' });
+  }
+});
+
 // ==========================================
-// 3. GET USER GROUPS
+// 6. GROUP ENDPOINTS
 // ==========================================
 app.get('/api/groups', async (req, res) => {
   try {
@@ -129,9 +263,6 @@ app.get('/api/groups', async (req, res) => {
   }
 });
 
-// ==========================================
-// 4. GET SINGLE GROUP METADATA & MEMBERS
-// ==========================================
 app.get('/api/groups/:groupId', async (req, res) => {
   const { groupId } = req.params;
   try {
@@ -155,9 +286,6 @@ app.get('/api/groups/:groupId', async (req, res) => {
   }
 });
 
-// ==========================================
-// 5. GET GROUP MESSAGES
-// ==========================================
 app.get('/api/groups/:groupId/messages', async (req, res) => {
   const { groupId } = req.params;
   try {
@@ -175,9 +303,6 @@ app.get('/api/groups/:groupId/messages', async (req, res) => {
   }
 });
 
-// ==========================================
-// 6. POST GROUP MESSAGE
-// ==========================================
 app.post('/api/groups/:groupId/messages', async (req, res) => {
   const { groupId } = req.params;
   const { sender, sender_username, content, image_url, duration } = req.body;
@@ -214,5 +339,8 @@ app.post('/api/groups/:groupId/messages', async (req, res) => {
   }
 });
 
+// ==========================================
+// 7. SERVER INITIALIZATION
+// ==========================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
