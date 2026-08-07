@@ -74,15 +74,23 @@ const handleSignup = async (req, res) => {
       .select()
       .single();
 
-    if (error) throw error;
-    res.status(201).json({ success: true, user: data });
+    if (error) {
+      console.error('Supabase insert error:', error);
+      // Handle existing username specifically
+      if (error.code === '23505') {
+        return res.status(400).json({ error: 'Username already taken.' });
+      }
+      return res.status(400).json({ error: error.message || 'Failed to create user account.' });
+    }
+
+    return res.status(201).json({ success: true, user: data });
   } catch (err) {
-    console.error('Error during signup:', err);
-    res.status(500).json({ error: err.message || 'Failed to create account.' });
+    console.error('Unexpected error during signup:', err);
+    return res.status(500).json({ error: 'Internal server error during signup.' });
   }
 };
 
-// Handle both route names seamlessly
+// Handle both route aliases
 app.post('/api/signup', handleSignup);
 app.post('/api/register', handleSignup);
 
@@ -100,18 +108,19 @@ app.post('/api/login', async (req, res) => {
       .select('*')
       .eq('username', cleanUsername)
       .eq('password', password)
-      .single();
+      .maybeSingle(); // maybeSingle prevents throwing when user is not found
 
     if (error || !user) {
       return res.status(401).json({ error: 'Invalid username or password.' });
     }
 
-    res.json({ success: true, user });
+    return res.json({ success: true, user });
   } catch (err) {
     console.error('Error during login:', err);
-    res.status(500).json({ error: 'Login failed.' });
+    return res.status(500).json({ error: 'Login failed due to a server error.' });
   }
 });
+
 
 // ==========================================
 // 4. PUSH NOTIFICATION ENDPOINTS & HELPER
