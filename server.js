@@ -1,20 +1,9 @@
 const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
 const cors = require('cors');
 const webpush = require('web-push');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
-const server = http.createServer(app);
-
-// Initialize Socket.io with CORS enabled
-const io = new Server(server, {
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST']
-  }
-});
 
 // Middleware & Explicit CORS
 app.use(cors({
@@ -32,7 +21,7 @@ const SUPABASE_URL = process.env.SUPABASE_URL || 'https://your-supabase-url.supa
 const SUPABASE_KEY = process.env.SUPABASE_KEY || 'your-supabase-anon-key';
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// VAPID Setup
+// VAPID Setup with Safe Fallback Handling
 let publicVapidKey = process.env.VAPID_PUBLIC_KEY;
 let privateVapidKey = process.env.VAPID_PRIVATE_KEY;
 
@@ -49,6 +38,7 @@ try {
     privateVapidKey
   );
 } catch (e) {
+  console.error('VAPID setup error, generating fresh fallback pair:', e.message);
   const generatedKeys = webpush.generateVAPIDKeys();
   publicVapidKey = generatedKeys.publicKey;
   privateVapidKey = generatedKeys.privateKey;
@@ -59,39 +49,20 @@ try {
   );
 }
 
-// Map to track connected users: username.toLowerCase() -> socket.id
-const connectedUsers = new Map();
-
-// Helper to generate consistent room IDs between two users
-function getRoomId(user1, user2) {
-  return [user1.toLowerCase().trim(), user2.toLowerCase().trim()].sort().join('_');
-}
-
-// Helper to send push notifications
-async function sendPushNotification(targetUsername, payload) {
-  try {
-    const { data, error } = await supabase
-      .from('push_subscriptions')
-      .select('subscription')
-      .eq('username', targetUsername.toLowerCase())
-      .single();
-
-    if (error || !data) return;
-
-    const subscription = JSON.parse(data.subscription);
-    await webpush.sendNotification(subscription, JSON.stringify(payload));
-  } catch (err) {
-    console.error(`Failed to send push notification to ${targetUsername}:`, err);
-  }
-}
+// In-memory volatile state for typing & presence
+const typingState = new Map();
+const userHeartbeats = new Map();
 
 // ==========================================
-// 2. HTTP REST ENDPOINTS (Auth & Profile)
+// 2. HEALTH CHECK
 // ==========================================
 app.get('/', (req, res) => {
-  res.status(200).send('Retro Backend API with Socket.io is live and healthy!');
+  res.status(200).send('Retro Backend API is live and healthy!');
 });
 
+// ==========================================
+// 3. AUTHENTICATION & USER PROFILE ENDPOINTS
+// ==========================================
 const handleSignup = async (req, res) => {
   const { username, password } = req.body;
   const cleanUsername = (username || '').trim().replace('@', '');
@@ -108,6 +79,7 @@ const handleSignup = async (req, res) => {
       .single();
 
     if (error) {
+      console.error('Supabase insert error:', error);
       if (error.code === '23505') {
         return res.status(400).json({ error: 'Username already taken.' });
       }
@@ -116,6 +88,7 @@ const handleSignup = async (req, res) => {
 
     return res.status(201).json({ success: true, user: data });
   } catch (err) {
+    console.error('Unexpected error during signup:', err);
     return res.status(500).json({ error: 'Internal server error during signup.' });
   }
 };
@@ -145,10 +118,12 @@ app.post('/api/login', async (req, res) => {
 
     return res.json({ success: true, user });
   } catch (err) {
+    console.error('Error during login:', err);
     return res.status(500).json({ error: 'Login failed due to a server error.' });
   }
 });
 
+// Fetch All Users (With Profile Pictures)
 app.get('/api/users', async (req, res) => {
   try {
     const { data: users, error } = await supabase
@@ -158,10 +133,12 @@ app.get('/api/users', async (req, res) => {
     if (error) throw error;
     res.json(users || []);
   } catch (err) {
+    console.error('Error fetching users:', err);
     res.status(500).json({ error: 'Failed to fetch users.' });
   }
 });
 
+// Fetch Single User Profile
 app.get('/api/users/:username', async (req, res) => {
   const { username } = req.params;
   const cleanUser = (username || '').trim().replace('@', '');
@@ -179,13 +156,15 @@ app.get('/api/users/:username', async (req, res) => {
 
     res.json({
       ...user,
-      pfpUrl: user.profile_picture || null
+      pfpUrl: user.profile_picture || user.pfp || null
     });
   } catch (err) {
+    console.error('Error fetching user profile:', err);
     res.status(500).json({ error: 'Failed to fetch user profile.' });
   }
 });
 
+// Update Profile Picture
 const handlePfpUpdate = async (req, res) => {
   const { username, profile_picture, pfp, pfpUrl } = req.body;
   const cleanUser = (username || '').trim().replace('@', '');
@@ -205,6 +184,7 @@ const handlePfpUpdate = async (req, res) => {
 
     res.json({ success: true, message: 'Profile updated successfully.', pfpUrl: pfpData });
   } catch (err) {
+    console.error('Error updating profile picture:', err);
     res.status(500).json({ error: 'Failed to update profile picture.' });
   }
 };
@@ -212,6 +192,80 @@ const handlePfpUpdate = async (req, res) => {
 app.post('/api/users/profile', handlePfpUpdate);
 app.post('/api/users/pfp', handlePfpUpdate);
 
+// Delete Account
+app.delete('/api/users/:username', async (req, res) => {
+  const { username } = req.params;
+  const cleanUser = (username || '').trim().replace('@', '');
+
+  if (!cleanUser) {
+    return res.status(400).json({ error: 'Username is required.' });
+  }
+
+  try {
+    await supabase.from('push_subscriptions').delete().eq('username', cleanUser.toLowerCase());
+    await supabase.from('direct_messages').delete().or(`sender_username.eq.${cleanUser},receiver_username.eq.${cleanUser}`);
+    const { error } = await supabase.from('users').delete().eq('username', cleanUser);
+
+    if (error) throw error;
+
+    res.json({ success: true, message: 'Account deleted successfully.' });
+  } catch (err) {
+    console.error('Error deleting account:', err);
+    res.status(500).json({ error: 'Failed to delete account.' });
+  }
+});
+
+// ==========================================
+// 4. PUSH NOTIFICATION ENDPOINTS & HELPER
+// ==========================================
+app.get('/api/vapid-public-key', (req, res) => {
+  res.json({ publicKey: publicVapidKey });
+});
+
+app.post('/api/subscribe', async (req, res) => {
+  const { username, subscription } = req.body;
+  const cleanUsername = (username || '').trim().replace('@', '');
+
+  if (!cleanUsername || !subscription) {
+    return res.status(400).json({ error: 'Username and subscription object are required.' });
+  }
+
+  try {
+    const { error } = await supabase
+      .from('push_subscriptions')
+      .upsert({ 
+        username: cleanUsername.toLowerCase(), 
+        subscription: JSON.stringify(subscription) 
+      }, { onConflict: 'username' });
+
+    if (error) throw error;
+    res.status(201).json({ success: true, message: 'Push subscription saved.' });
+  } catch (err) {
+    console.error('Error saving subscription:', err);
+    res.status(500).json({ error: 'Failed to save subscription.' });
+  }
+});
+
+async function sendPushNotification(targetUsername, payload) {
+  try {
+    const { data, error } = await supabase
+      .from('push_subscriptions')
+      .select('subscription')
+      .eq('username', targetUsername.toLowerCase())
+      .single();
+
+    if (error || !data) return;
+
+    const subscription = JSON.parse(data.subscription);
+    await webpush.sendNotification(subscription, JSON.stringify(payload));
+  } catch (err) {
+    console.error(`Failed to send push notification to ${targetUsername}:`, err);
+  }
+}
+
+// ==========================================
+// 5. DIRECT MESSAGES & CONVERSATIONS
+// ==========================================
 app.get('/api/conversations', async (req, res) => {
   const username = (req.query.username || '').trim().replace('@', '');
   if (!username) {
@@ -244,14 +298,39 @@ app.get('/api/conversations', async (req, res) => {
 
     res.json({ conversations: Array.from(map.values()) });
   } catch (err) {
+    console.error('Error fetching conversations:', err);
     res.status(500).json({ error: 'Failed to fetch conversations.' });
+  }
+});
+
+app.get('/api/messages/:username', async (req, res) => {
+  const { username } = req.params;
+  const cleanUser = (username || '').trim().replace('@', '');
+
+  if (!cleanUser) {
+    return res.status(400).json({ error: 'Username parameter is required.' });
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('direct_messages')
+      .select('*')
+      .or(`sender_username.eq.${cleanUser},receiver_username.eq.${cleanUser}`)
+      .order('created_at', { ascending: true });
+
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    console.error('Error fetching inbox messages:', err);
+    res.status(500).json({ error: 'Failed to fetch messages.' });
   }
 });
 
 app.get('/api/messages', async (req, res) => {
   const { user1, user2 } = req.query;
+  
   if (!user1 || !user2) {
-    return res.status(400).json({ error: 'Both user1 and user2 are required.' });
+    return res.status(400).json({ error: 'Both user1 and user2 query parameters are required.' });
   }
 
   const u1 = user1.trim().replace('@', '');
@@ -267,134 +346,98 @@ app.get('/api/messages', async (req, res) => {
     if (error) throw error;
     res.json({ messages: data || [] });
   } catch (err) {
+    console.error('Error fetching messages:', err);
     res.status(500).json({ error: 'Failed to fetch messages.' });
   }
 });
 
-app.get('/api/vapid-public-key', (req, res) => {
-  res.json({ publicKey: publicVapidKey });
-});
+app.post('/api/messages', async (req, res) => {
+  const { sender_username, receiver_username, sender, receiver, content, image_url, duration } = req.body;
+  const cleanSender = (sender_username || sender || '').trim().replace('@', '');
+  const cleanReceiver = (receiver_username || receiver || '').trim().replace('@', '');
 
-app.post('/api/subscribe', async (req, res) => {
-  const { username, subscription } = req.body;
-  const cleanUsername = (username || '').trim().replace('@', '');
-
-  if (!cleanUsername || !subscription) {
-    return res.status(400).json({ error: 'Username and subscription are required.' });
+  if (!cleanSender || !cleanReceiver || (!content && !image_url)) {
+    return res.status(400).json({ error: 'Sender, receiver, and content/image are required.' });
   }
 
   try {
-    const { error } = await supabase
-      .from('push_subscriptions')
-      .upsert({ 
-        username: cleanUsername.toLowerCase(), 
-        subscription: JSON.stringify(subscription) 
-      }, { onConflict: 'username' });
-
-    if (error) throw error;
-    res.status(201).json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to save subscription.' });
-  }
-});
-
-// ==========================================
-// 3. SOCKET.IO REAL-TIME ENGINE
-// ==========================================
-io.on('connection', (socket) => {
-
-  // Register online user session
-  socket.on('register_user', (username) => {
-    if (!username) return;
-    const cleanUser = username.trim().replace('@', '').toLowerCase();
-    socket.username = cleanUser;
-    connectedUsers.set(cleanUser, socket.id);
-
-    // Broadcast user's online status
-    io.emit('user_presence', { username: cleanUser, online: true });
-  });
-
-  // Query online status for a target user
-  socket.on('check_online', (targetUsername) => {
-    if (!targetUsername) return;
-    const cleanTarget = targetUsername.trim().replace('@', '').toLowerCase();
-    const isOnline = connectedUsers.has(cleanTarget);
-    socket.emit('online_status', { username: cleanTarget, online: isOnline });
-  });
-
-  // Join private conversation room
-  socket.on('join_room', ({ sender, receiver }) => {
-    if (!sender || !receiver) return;
-    const roomId = getRoomId(sender, receiver);
-    socket.join(roomId);
-  });
-
-  // Real-time Messaging Event
-  socket.on('send_message', async (data) => {
-    const { sender_username, receiver_username, content, image_url, duration } = data;
-    const cleanSender = (sender_username || '').trim().replace('@', '');
-    const cleanReceiver = (receiver_username || '').trim().replace('@', '');
-
-    if (!cleanSender || !cleanReceiver || (!content && !image_url)) return;
-
     let expires_at = null;
     if (duration && duration > 0) {
       expires_at = new Date(Date.now() + duration * 1000).toISOString();
     }
 
-    try {
-      // Save message to Supabase
-      const { data: message, error } = await supabase
-        .from('direct_messages')
-        .insert([{
-          sender_username: cleanSender,
-          receiver_username: cleanReceiver,
-          content: content || '',
-          image_url: image_url || null,
-          expires_at
-        }])
-        .select()
-        .single();
+    const { data: message, error } = await supabase
+      .from('direct_messages')
+      .insert([{
+        sender_username: cleanSender,
+        receiver_username: cleanReceiver,
+        content: content || '',
+        image_url: image_url || null,
+        expires_at
+      }])
+      .select()
+      .single();
 
-      if (error) throw error;
+    if (error) throw error;
 
-      const roomId = getRoomId(cleanSender, cleanReceiver);
+    sendPushNotification(cleanReceiver, {
+      title: `@${cleanSender}`,
+      body: content || (image_url ? 'Sent an image' : 'New message'),
+      icon: '/icon.png',
+      url: `/chat.html?user=${cleanSender}`,
+      badgeCount: 1
+    });
 
-      // Emit to room instantly
-      io.to(roomId).emit('receive_message', message);
-
-      // Trigger web push if recipient isn't currently connected to the socket
-      const isRecipientConnected = connectedUsers.has(cleanReceiver.toLowerCase());
-      if (!isRecipientConnected) {
-        sendPushNotification(cleanReceiver, {
-          title: `@${cleanSender}`,
-          body: content || (image_url ? 'Sent an image' : 'New message'),
-          icon: '/icon.png',
-          url: `/chat.html?user=${cleanSender}`
-        });
-      }
-    } catch (err) {
-      console.error('Error handling socket message:', err);
-      socket.emit('message_error', { error: 'Failed to send message.' });
-    }
-  });
-
-  // Real-time Typing Event
-  socket.on('typing', ({ sender, receiver, isTyping }) => {
-    if (!sender || !receiver) return;
-    const roomId = getRoomId(sender, receiver);
-    socket.to(roomId).emit('user_typing', { sender, isTyping: !!isTyping });
-  });
-
-  // Handle Disconnection
-  socket.on('disconnect', () => {
-    if (socket.username) {
-      connectedUsers.delete(socket.username);
-      io.emit('user_presence', { username: socket.username, online: false });
-    }
-  });
+    res.status(201).json({ success: true, message });
+  } catch (err) {
+    console.error('Error sending message:', err);
+    res.status(500).json({ error: 'Failed to send message.' });
+  }
 });
 
-// Start Server
+// ==========================================
+// 6. IN-MEMORY STATE FOR PRESENCE & TYPING
+// ==========================================
+app.post('/api/typing', (req, res) => {
+  const { sender, receiver, isTyping } = req.body;
+  if (sender && receiver) {
+    const key = `${sender.toLowerCase().trim()}_${receiver.toLowerCase().trim()}`;
+    typingState.set(key, { isTyping: !!isTyping, timestamp: Date.now() });
+  }
+  res.json({ success: true });
+});
+
+app.get('/api/typing/:sender/:receiver', (req, res) => {
+  const { sender, receiver } = req.params;
+  const key = `${sender.toLowerCase().trim()}_${receiver.toLowerCase().trim()}`;
+  const state = typingState.get(key);
+  if (state && (Date.now() - state.timestamp < 4000)) {
+    return res.json({ isTyping: state.isTyping });
+  }
+  res.json({ isTyping: false });
+});
+
+app.post('/api/heartbeat', (req, res) => {
+  const { username } = req.body;
+  if (username) {
+    userHeartbeats.set(username.toLowerCase().trim(), Date.now());
+  }
+  res.json({ success: true });
+});
+
+app.get('/api/online-status/:username', (req, res) => {
+  const { username } = req.params;
+  const lastSeen = userHeartbeats.get(username.toLowerCase().trim());
+  const isOnline = lastSeen && (Date.now() - lastSeen < 30000);
+  res.json({ online: !!isOnline });
+});
+
+// Global Error Handler
+app.use((err, req, res, next) => {
+  console.error('Unhandled server error:', err);
+  res.status(500).json({ error: 'An unexpected internal server error occurred.' });
+});
+
+// Server Initialization
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
