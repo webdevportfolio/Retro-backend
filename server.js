@@ -57,7 +57,7 @@ app.get('/', (req, res) => {
 });
 
 // ==========================================
-// 3. AUTHENTICATION ENDPOINTS
+// 3. AUTHENTICATION & USER PROFILE ENDPOINTS
 // ==========================================
 const handleSignup = async (req, res) => {
   const { username, password } = req.body;
@@ -89,7 +89,6 @@ const handleSignup = async (req, res) => {
   }
 };
 
-// Handle both route aliases
 app.post('/api/signup', handleSignup);
 app.post('/api/register', handleSignup);
 
@@ -120,7 +119,7 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// Fetch All Users (used for resolving Chat Codes)
+// Fetch All Users (for Chat Code Search)
 app.get('/api/users', async (req, res) => {
   try {
     const { data: users, error } = await supabase
@@ -132,6 +131,78 @@ app.get('/api/users', async (req, res) => {
   } catch (err) {
     console.error('Error fetching users:', err);
     res.status(500).json({ error: 'Failed to fetch users.' });
+  }
+});
+
+// Fetch Single User Profile (for profile.html)
+app.get('/api/users/:username', async (req, res) => {
+  const { username } = req.params;
+  const cleanUser = (username || '').trim().replace('@', '');
+
+  try {
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('*')
+      .ilike('username', cleanUser)
+      .maybeSingle();
+
+    if (error || !user) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    res.json(user);
+  } catch (err) {
+    console.error('Error fetching user profile:', err);
+    res.status(500).json({ error: 'Failed to fetch user profile.' });
+  }
+});
+
+// Update Profile Picture
+app.post('/api/users/profile', async (req, res) => {
+  const { username, profile_picture, pfp } = req.body;
+  const cleanUser = (username || '').trim().replace('@', '');
+
+  if (!cleanUser) {
+    return res.status(400).json({ error: 'Username is required.' });
+  }
+
+  const pfpData = profile_picture || pfp;
+
+  try {
+    const { error } = await supabase
+      .from('users')
+      .update({ profile_picture: pfpData })
+      .eq('username', cleanUser);
+
+    if (error) throw error;
+
+    res.json({ success: true, message: 'Profile updated successfully.' });
+  } catch (err) {
+    console.error('Error updating profile picture:', err);
+    res.status(500).json({ error: 'Failed to update profile picture.' });
+  }
+});
+
+// Delete Account
+app.delete('/api/users/:username', async (req, res) => {
+  const { username } = req.params;
+  const cleanUser = (username || '').trim().replace('@', '');
+
+  if (!cleanUser) {
+    return res.status(400).json({ error: 'Username is required.' });
+  }
+
+  try {
+    await supabase.from('push_subscriptions').delete().eq('username', cleanUser.toLowerCase());
+    await supabase.from('direct_messages').delete().or(`sender_username.eq.${cleanUser},receiver_username.eq.${cleanUser}`);
+    const { error } = await supabase.from('users').delete().eq('username', cleanUser);
+
+    if (error) throw error;
+
+    res.json({ success: true, message: 'Account deleted successfully.' });
+  } catch (err) {
+    console.error('Error deleting account:', err);
+    res.status(500).json({ error: 'Failed to delete account.' });
   }
 });
 
@@ -223,7 +294,7 @@ app.get('/api/conversations', async (req, res) => {
   }
 });
 
-// Inbox messaging route endpoint: handles GET /api/messages/:username
+// Inbox metrics route endpoint: handles GET /api/messages/:username
 app.get('/api/messages/:username', async (req, res) => {
   const { username } = req.params;
   const cleanUser = (username || '').trim().replace('@', '');
