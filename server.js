@@ -3,6 +3,8 @@ const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
+
+// Enable CORS for all origins (or specify your GitHub Pages URL)
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
@@ -10,7 +12,69 @@ const SUPABASE_URL = process.env.SUPABASE_URL || 'https://your-supabase-url.supa
 const SUPABASE_KEY = process.env.SUPABASE_KEY || 'your-supabase-anon-key';
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// 1. GET USER CONVERSATIONS (INBOX DMs)
+// ==========================================
+// 0. HEALTH CHECK ROUTE (Fixes UptimeRobot & Blank Screen)
+// ==========================================
+app.get('/', (req, res) => {
+  res.status(200).send('Retro Backend API is live and healthy!');
+});
+
+// ==========================================
+// 1. AUTHENTICATION ENDPOINTS (Fixes Sign Up Screen)
+// ==========================================
+app.post('/api/signup', async (req, res) => {
+  const { username, password } = req.body;
+  const cleanUsername = (username || '').trim().replace('@', '');
+
+  if (!cleanUsername || !password) {
+    return res.status(400).json({ error: 'Username and password are required.' });
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('users')
+      .insert([{ username: cleanUsername, password }])
+      .select()
+      .single();
+
+    if (error) throw error;
+    res.status(201).json({ success: true, user: data });
+  } catch (err) {
+    console.error('Error during signup:', err);
+    res.status(500).json({ error: err.message || 'Failed to create account.' });
+  }
+});
+
+app.post('/api/login', async (req, res) => {
+  const { username, password } = req.body;
+  const cleanUsername = (username || '').trim().replace('@', '');
+
+  if (!cleanUsername || !password) {
+    return res.status(400).json({ error: 'Username and password are required.' });
+  }
+
+  try {
+    const { data: user, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('username', cleanUsername)
+      .eq('password', password)
+      .single();
+
+    if (error || !user) {
+      return res.status(401).json({ error: 'Invalid username or password.' });
+    }
+
+    res.json({ success: true, user });
+  } catch (err) {
+    console.error('Error during login:', err);
+    res.status(500).json({ error: 'Login failed.' });
+  }
+});
+
+// ==========================================
+// 2. GET USER CONVERSATIONS (INBOX DMs)
+// ==========================================
 app.get('/api/conversations', async (req, res) => {
   const username = (req.query.username || '').trim().replace('@', '');
   if (!username) {
@@ -48,7 +112,9 @@ app.get('/api/conversations', async (req, res) => {
   }
 });
 
-// 2. GET USER GROUPS
+// ==========================================
+// 3. GET USER GROUPS
+// ==========================================
 app.get('/api/groups', async (req, res) => {
   try {
     const { data: groups, error } = await supabase
@@ -63,7 +129,9 @@ app.get('/api/groups', async (req, res) => {
   }
 });
 
-// 3. GET SINGLE GROUP METADATA & MEMBERS
+// ==========================================
+// 4. GET SINGLE GROUP METADATA & MEMBERS
+// ==========================================
 app.get('/api/groups/:groupId', async (req, res) => {
   const { groupId } = req.params;
   try {
@@ -87,7 +155,9 @@ app.get('/api/groups/:groupId', async (req, res) => {
   }
 });
 
-// 4. GET GROUP MESSAGES
+// ==========================================
+// 5. GET GROUP MESSAGES
+// ==========================================
 app.get('/api/groups/:groupId/messages', async (req, res) => {
   const { groupId } = req.params;
   try {
@@ -105,7 +175,9 @@ app.get('/api/groups/:groupId/messages', async (req, res) => {
   }
 });
 
-// 5. POST GROUP MESSAGE
+// ==========================================
+// 6. POST GROUP MESSAGE
+// ==========================================
 app.post('/api/groups/:groupId/messages', async (req, res) => {
   const { groupId } = req.params;
   const { sender, sender_username, content, image_url, duration } = req.body;
