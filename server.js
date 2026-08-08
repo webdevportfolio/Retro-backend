@@ -18,16 +18,7 @@ app.post('/api/signup',handleSignup);app.post('/api/register',handleSignup);
 
 app.post('/api/login',async(req,res)=>{const username=clean(req.body.username),password=req.body.password;if(!username||!password)return res.status(400).json({error:'Username and password are required.'});try{const{data:user,error}=await supabase.from('users').select('*').eq('username',username).eq('password',password).maybeSingle();if(error||!user)return res.status(401).json({error:'Invalid username or password.'});res.json({success:true,user})}catch(e){res.status(500).json({error:'Login failed due to a server error.'})}});
 
-app.get('/api/users',async(req,res)=>{
-try{
-const{data,error}=await supabase.from('users').select('username,profile_picture');
-if(error)throw error;
-res.json(data||[]);
-}catch(e){
-console.error('Fetch users error:',e);
-res.status(500).json({error:'Failed to fetch users.'});
-}
-});
+app.get('/api/users',async(req,res)=>{try{const{data,error}=await supabase.from('users').select('username,profile_picture');if(error)throw error;res.json(data||[])}catch(e){console.error('Fetch users error:',e);res.status(500).json({error:'Failed to fetch users.'})}});
 app.get('/api/users/:username',async(req,res)=>{try{const{data,error}=await supabase.from('users').select('*').ilike('username',clean(req.params.username)).maybeSingle();if(error||!data)return res.status(404).json({error:'User not found.'});res.json(data)}catch(e){res.status(500).json({error:'Failed to fetch user profile.'})}});
 
 app.post('/api/users/profile',async(req,res)=>{const username=clean(req.body.username),pfp=req.body.profile_picture||req.body.pfp;if(!username)return res.status(400).json({error:'Username is required.'});try{const{error}=await supabase.from('users').update({profile_picture:pfp}).eq('username',username);if(error)throw error;res.json({success:true,message:'Profile updated successfully.'})}catch(e){res.status(500).json({error:'Failed to update profile picture.'})}});
