@@ -463,7 +463,129 @@ res.json({
 online:!!(t&&Date.now()-t<30000)
 })
 });
+// ==================== TIC TAC TOE ====================
 
+app.post('/api/games/tictactoe',async(req,res)=>{
+const player1=clean(req.body.player1),player2=clean(req.body.player2);
+if(!player1||!player2)return res.status(400).json({error:'Both players are required.'});
+if(player1.toLowerCase()===player2.toLowerCase())return res.status(400).json({error:'You cannot play yourself.'});
+
+try{
+const gameId=`ttt_${Date.now()}_${Math.random().toString(36).substring(2,8)}`;
+const game={
+game_id:gameId,
+game_type:'tictactoe',
+player1,
+player2,
+board:['','','','','','','','',''],
+turn:player1,
+status:'playing',
+winner:null,
+created_at:new Date().toISOString()
+};
+
+const{data,error}=await supabase.from('game_sessions').insert([game]).select().single();
+if(error)throw error;
+
+res.status(201).json({success:true,game:data});
+}catch(e){
+console.error('Create Tic Tac Toe game:',e);
+res.status(500).json({error:'Failed to create game.'});
+}
+});
+
+app.get('/api/games/tictactoe/:gameId',async(req,res)=>{
+try{
+const{data,error}=await supabase.from('game_sessions').select('*').eq('game_id',req.params.gameId).eq('game_type','tictactoe').maybeSingle();
+if(error)throw error;
+if(!data)return res.status(404).json({error:'Game not found.'});
+res.json({game:data});
+}catch(e){
+console.error('Get Tic Tac Toe game:',e);
+res.status(500).json({error:'Failed to load game.'});
+}
+});
+
+app.put('/api/games/tictactoe/:gameId/move',async(req,res)=>{
+const gameId=req.params.gameId;
+const username=clean(req.body.username);
+const index=Number(req.body.index);
+
+if(!username||index<0||index>8)return res.status(400).json({error:'Invalid move.'});
+
+try{
+const{data:game,error:gameError}=await supabase.from('game_sessions').select('*').eq('game_id',gameId).eq('game_type','tictactoe').maybeSingle();
+
+if(gameError)throw gameError;
+if(!game)return res.status(404).json({error:'Game not found.'});
+
+const isPlayer1=game.player1.toLowerCase()===username.toLowerCase();
+const isPlayer2=game.player2.toLowerCase()===username.toLowerCase();
+
+if(!isPlayer1&&!isPlayer2)return res.status(403).json({error:'You are not part of this game.'});
+if(game.status!=='playing')return res.status(400).json({error:'Game is already finished.'});
+if(game.turn.toLowerCase()!==username.toLowerCase())return res.status(400).json({error:'Not your turn.'});
+if(game.board[index])return res.status(400).json({error:'That square is already taken.'});
+
+const symbol=isPlayer1?'X':'O';
+const board=[...game.board];
+board[index]=symbol;
+
+const wins=[
+[0,1,2],[3,4,5],[6,7,8],
+[0,3,6],[1,4,7],[2,5,8],
+[0,4,8],[2,4,6]
+];
+
+let winner=null;
+let status='playing';
+
+for(const[a,b,c]of wins){
+if(board[a]&&board[a]===board[b]&&board[a]===board[c]){
+winner=username;
+status='finished';
+break;
+}
+}
+
+if(!winner&&board.every(Boolean))status='draw';
+
+const nextTurn=username.toLowerCase()===game.player1.toLowerCase()?game.player2:game.player1;
+
+const{data:updated,error:updateError}=await supabase.from('game_sessions').update({
+board,
+turn:status==='playing'?nextTurn:game.turn,
+status,
+winner
+}).eq('game_id',gameId).select().single();
+
+if(updateError)throw updateError;
+
+if(status==='playing'){
+sendPushNotification(nextTurn,{
+title:'🎮 Your Turn',
+body:`${username} just played. It's your turn in Tic Tac Toe.`,
+icon:'/icon.png',
+url:`/tictactoe.html?game=${encodeURIComponent(gameId)}&opponent=${encodeURIComponent(username)}`
+});
+}
+
+res.json({success:true,game:updated});
+}catch(e){
+console.error('Tic Tac Toe move:',e);
+res.status(500).json({error:'Failed to make move.'});
+}
+});
+
+app.delete('/api/games/tictactoe/:gameId',async(req,res)=>{
+try{
+const{error}=await supabase.from('game_sessions').delete().eq('game_id',req.params.gameId);
+if(error)throw error;
+res.json({success:true});
+}catch(e){
+res.status(500).json({error:'Failed to delete game.'});
+}
+});
 /* ERROR HANDLER */
 
 app.use((err,req,res,next)=>{
