@@ -281,6 +281,65 @@ res.status(500).json({error:'Failed to permanently delete conversation.'})
 });
 
 
+/* ==================== GAMES — CHALLENGES ==================== */
+
+app.post('/api/games/challenge',async(req,res)=>{
+const sender=clean(req.body.sender);
+const receiver=clean(req.body.receiver);
+const game=(req.body.game||'').trim().toLowerCase();
+
+if(!sender||!receiver||!game){
+return res.status(400).json({error:'Sender, receiver, and game are required.'});
+}
+
+if(sender.toLowerCase()===receiver.toLowerCase()){
+return res.status(400).json({error:'You cannot challenge yourself.'});
+}
+
+if(!['tictactoe','chess'].includes(game)){
+return res.status(400).json({error:'Invalid game.'});
+}
+
+try{
+const{data:dm,error:dmError}=await supabase
+.from('direct_messages')
+.select('id')
+.or(`and(sender_username.eq.${sender},receiver_username.eq.${receiver}),and(sender_username.eq.${receiver},receiver_username.eq.${sender})`)
+.limit(1);
+
+if(dmError)throw dmError;
+
+if(!dm||!dm.length){
+return res.status(403).json({error:'You can only play with someone in your DMs.'});
+}
+
+const{data:existing,error:existingError}=await supabase
+.from('game_challenges')
+.select('*')
+.or(`and(sender.eq.${sender},receiver.eq.${receiver}),and(sender.eq.${receiver},receiver.eq.${sender})`)
+.eq('game',game)
+.eq('status','pending')
+.limit(1);
+
+if(existingError)throw existingError;
+
+if(existing&&existing.length){
+return res.status(409).json({error:'There is already a pending challenge.'});
+}
+
+const{data:challenge,error:challengeError}=await supabase
+.from('game_challenges')
+.insert([{
+game,
+sender,
+receiver,
+status:'pending'
+}])
+.select()
+.single();
+
+if(challengeError)throw challengeError;
+
 sendPushNotification(receiver,{
 title:'🎮 Game Challenge',
 body:`${sender} challenged you to ${game==='tictactoe'?'Tic Tac Toe':'Chess'}.`,
