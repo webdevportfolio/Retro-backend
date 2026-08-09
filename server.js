@@ -363,6 +363,95 @@ error:'Failed to create game challenge.'
 });
 
 
+/* SENT CHALLENGES
+   IMPORTANT: This route MUST come BEFORE /:username */
+
+app.get('/api/games/challenges/sent/:username',async(req,res)=>{
+const username=clean(req.params.username);
+
+if(!username){
+return res.status(400).json({error:'Username is required.'});
+}
+
+try{
+const{data:challenges,error:challengeError}=await supabase
+.from('game_challenges')
+.select('*')
+.eq('sender',username)
+.order('created_at',{ascending:false})
+.limit(20);
+
+if(challengeError)throw challengeError;
+
+const results=[];
+
+for(const challenge of challenges||[]){
+
+let game=null;
+
+if(challenge.status==='accepted'&&challenge.game==='tictactoe'&&challenge.game_id){
+
+const{data:games,error:gameError}=await supabase
+.from('game_sessions')
+.select('*')
+.eq('game_id',challenge.game_id)
+.eq('game_type','tictactoe')
+.limit(1);
+
+if(gameError)throw gameError;
+
+if(games&&games.length){
+game=games[0];
+}
+}
+
+/* Fallback in case game_id was not stored */
+
+if(
+challenge.status==='accepted'&&
+challenge.game==='tictactoe'&&
+!game
+){
+
+const{data:fallbackGames,error:fallbackError}=await supabase
+.from('game_sessions')
+.select('*')
+.eq('game_type','tictactoe')
+.eq('player1',challenge.sender)
+.eq('player2',challenge.receiver)
+.order('created_at',{ascending:false})
+.limit(1);
+
+if(fallbackError)throw fallbackError;
+
+if(fallbackGames&&fallbackGames.length){
+game=fallbackGames[0];
+}
+}
+
+results.push({
+...challenge,
+game
+});
+}
+
+res.json({
+challenges:results
+});
+
+}catch(e){
+console.error('Fetch sent game challenges:',e);
+
+res.status(500).json({
+error:'Failed to fetch sent challenges.'
+});
+}
+});
+
+
+/* INCOMING CHALLENGES
+   IMPORTANT: This route comes AFTER /sent/:username */
+
 app.get('/api/games/challenges/:username',async(req,res)=>{
 const username=clean(req.params.username);
 
@@ -391,88 +480,6 @@ res.status(500).json({
 error:'Failed to fetch game challenges.'
 });
 }
-});
-
-
-/* SENT CHALLENGES
-   Used by the sender to discover that their challenge was accepted
-   and retrieve the exact game session created for that challenge. */
-
-app.get('/api/games/challenges/sent/:username',async(req,res)=>{
-const username=clean(req.params.username);
-
-if(!username){
-return res.status(400).json({error:'Username is required.'});
-}
-
-try{
-const{data:challenges,error:challengeError}=await supabase
-.from('game_challenges')
-.select('*')
-.eq('sender',username)
-.order('created_at',{ascending:false})
-.limit(20);
-
-if(challengeError)throw challengeError;
-
-const results=[];
-
-for(const challenge of challenges||[]){
-
-let game=null;
-
-if(challenge.status==='accepted'&&challenge.game==='tictactoe'){
-
-const{data:games,error:gameError}=await supabase
-.from('game_sessions')
-.select('*')
-.eq('game_id',challenge.game_id||'')
-.eq('game_type','tictactoe')
-.limit(1);
-
-if(gameError)throw gameError;
-
-if(games&&games.length){
-game=games[0];
-}else{
-
-const{data:fallbackGames,error:fallbackError}=await supabase
-.from('game_sessions')
-.select('*')
-.eq('game_type','tictactoe')
-.eq('player1',challenge.sender)
-.eq('player2',challenge.receiver)
-.order('created_at',{ascending:false})
-.limit(1);
-
-if(fallbackError)throw fallbackError;
-
-game=fallbackGames&&fallbackGames.length?fallbackGames[0]:null;
-}
-}
-
-results.push({
-...challenge,
-game
-});
-}
-
-res.json({
-challenges:results
-});
-
-}catch(e){
-console.error('Fetch sent game challenges:',e);
-
-res.status(500).json({
-error:'Failed to fetch sent challenges.'
-});
-}
-});
-
-
-app.get('/api/games/challenges/:id/respond-test',async(req,res)=>{
-res.status(404).json({error:'Not found.'});
 });
 
 
@@ -574,17 +581,17 @@ const{data:newGame,error:gameError}=await supabase
 if(gameError)throw gameError;
 
 
-/* IMPORTANT:
-   Store the game ID on the challenge if your table has a game_id column.
-   If the column does not exist, this update is skipped. */
+/* Save game ID on challenge */
 
-try{
-await supabase
+const{error:challengeGameError}=await supabase
 .from('game_challenges')
-.update({game_id:newGame.game_id})
+.update({
+game_id:newGame.game_id
+})
 .eq('id',id);
-}catch(e){
-console.error('Could not store game_id on challenge:',e.message);
+
+if(challengeGameError){
+console.error('Could not store game_id:',challengeGameError.message);
 }
 
 
@@ -600,7 +607,10 @@ badgeCount:1
 
 return res.json({
 success:true,
-challenge:updated,
+challenge:{
+...updated,
+game_id:newGame.game_id
+},
 game:newGame
 });
 }
@@ -635,7 +645,7 @@ game:null
 console.error('Respond to game challenge:',e);
 
 res.status(500).json({
-error:'Failed to respond to game challenge.'
+error:'Failed to respond to challenge.'
 });
 }
 });
@@ -855,14 +865,10 @@ const wins=[
 [6,7,8],
 [0,3,6],
 [1,4,7],
-[2,4,7],
+[2,5,8],
 [0,4,8],
 [2,4,6]
 ];
-
-/* Correct the third column winning pattern */
-
-wins[5]=[2,5,8];
 
 let winner=null;
 let status='playing';
@@ -979,9 +985,9 @@ console.error('Delete Tic Tac Toe game:',e);
 res.status(500).json({
 error:'Failed to delete game.'
 });
-
 }
 });
+
 
 /* TYPING + ONLINE */
 
