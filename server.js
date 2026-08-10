@@ -1660,7 +1660,606 @@ Date.now()-t<30000
 )
 });
 });
+/* =========================================================
+   GROUP CHATS
+========================================================= */
 
+app.post('/api/groups',async(req,res)=>{
+const name=(req.body.name||'').trim();
+const description=(req.body.description||'').trim();
+const admin=clean(req.body.admin_username||req.body.username);
+
+if(!name||!admin){
+return res.status(400).json({
+error:'Group name and admin username are required.'
+});
+}
+
+try{
+
+const{data:user,error:userError}=await supabase
+.from('users')
+.select('username')
+.ilike('username',admin)
+.maybeSingle();
+
+if(userError)throw userError;
+
+if(!user){
+return res.status(404).json({
+error:'User not found.'
+});
+}
+
+const{data:group,error:groupError}=await supabase
+.from('groups')
+.insert([{
+name,
+description,
+admin_username:user.username
+}])
+.select()
+.single();
+
+if(groupError)throw groupError;
+
+const{error:memberError}=await supabase
+.from('group_members')
+.insert([{
+group_id:group.id,
+username:user.username
+}]);
+
+if(memberError)throw memberError;
+
+res.status(201).json({
+success:true,
+group
+});
+
+}catch(e){
+
+console.error('Create group:',e);
+
+res.status(500).json({
+error:'Failed to create group.'
+});
+}
+});
+
+
+/* GET USER GROUPS */
+
+app.get('/api/groups/:username',async(req,res)=>{
+const username=clean(req.params.username);
+
+if(!username){
+return res.status(400).json({
+error:'Username is required.'
+});
+}
+
+try{
+
+const{data:members,error:memberError}=await supabase
+.from('group_members')
+.select('group_id')
+.ilike('username',username);
+
+if(memberError)throw memberError;
+
+if(!members||!members.length){
+return res.json({
+groups:[]
+});
+}
+
+const ids=members.map(m=>m.group_id);
+
+const{data:groups,error:groupError}=await supabase
+.from('groups')
+.select('*')
+.in('id',ids)
+.order('created_at',{ascending:false});
+
+if(groupError)throw groupError;
+
+res.json({
+groups:groups||[]
+});
+
+}catch(e){
+
+console.error('Fetch groups:',e);
+
+res.status(500).json({
+error:'Failed to fetch groups.'
+});
+}
+});
+
+
+/* GET GROUP */
+
+app.get('/api/groups/info/:groupId',async(req,res)=>{
+try{
+
+const{data:group,error}=await supabase
+.from('groups')
+.select('*')
+.eq('id',req.params.groupId)
+.maybeSingle();
+
+if(error)throw error;
+
+if(!group){
+return res.status(404).json({
+error:'Group not found.'
+});
+}
+
+const{data:members,error:memberError}=await supabase
+.from('group_members')
+.select('*')
+.eq('group_id',group.id)
+.order('joined_at',{ascending:true});
+
+if(memberError)throw memberError;
+
+res.json({
+group,
+members:members||[]
+});
+
+}catch(e){
+
+console.error('Get group:',e);
+
+res.status(500).json({
+error:'Failed to fetch group.'
+});
+}
+});
+
+
+/* GET PEOPLE FROM USER'S DMS */
+
+app.get('/api/groups/:groupId/available-members/:username',async(req,res)=>{
+const username=clean(req.params.username);
+const groupId=req.params.groupId;
+
+try{
+
+const{data:messages,error}=await supabase
+.from('direct_messages')
+.select('sender_username,receiver_username')
+.or(
+`sender_username.ilike.${username},receiver_username.ilike.${username}`
+);
+
+if(error)throw error;
+
+const people=new Map();
+
+(messages||[]).forEach(m=>{
+
+const sender=clean(m.sender_username);
+const receiver=clean(m.receiver_username);
+
+if(!same(sender,username)){
+people.set(sender.toLowerCase(),sender);
+}
+
+if(!same(receiver,username)){
+people.set(receiver.toLowerCase(),receiver);
+}
+
+});
+
+const{data:members,error:memberError}=await supabase
+.from('group_members')
+.select('username')
+.eq('group_id',groupId);
+
+if(memberError)throw memberError;
+
+const existing=new Set(
+(members||[]).map(m=>m.username.toLowerCase())
+);
+
+const available=[...people.values()]
+.filter(person=>!existing.has(person.toLowerCase()));
+
+res.json({
+users:available
+});
+
+}catch(e){
+
+console.error('Available group members:',e);
+
+res.status(500).json({
+error:'Failed to fetch available members.'
+});
+}
+});
+
+
+/* ADD MEMBER — ADMIN ONLY */
+
+app.post('/api/groups/:groupId/members',async(req,res)=>{
+const groupId=req.params.groupId;
+const admin=clean(req.body.admin_username||req.body.username);
+const member=clean(req.body.member_username||req.body.member);
+
+if(!admin||!member){
+return res.status(400).json({
+error:'Admin and member usernames are required.'
+});
+}
+
+try{
+
+const{data:group,error:groupError}=await supabase
+.from('groups')
+.select('*')
+.eq('id',groupId)
+.maybeSingle();
+
+if(groupError)throw groupError;
+
+if(!group){
+return res.status(404).json({
+error:'Group not found.'
+});
+}
+
+if(!same(group.admin_username,admin)){
+return res.status(403).json({
+error:'Only the group admin can add members.'
+});
+}
+
+const{data:user,error:userError}=await supabase
+.from('users')
+.select('username')
+.ilike('username',member)
+.maybeSingle();
+
+if(userError)throw userError;
+
+if(!user){
+return res.status(404).json({
+error:'User not found.'
+});
+}
+
+const{data:existing,error:existingError}=await supabase
+.from('group_members')
+.select('id')
+.eq('group_id',groupId)
+.ilike('username',user.username)
+.maybeSingle();
+
+if(existingError)throw existingError;
+
+if(existing){
+return res.status(409).json({
+error:'User is already in this group.'
+});
+}
+
+const{data:newMember,error:memberError}=await supabase
+.from('group_members')
+.insert([{
+group_id:groupId,
+username:user.username
+}])
+.select()
+.single();
+
+if(memberError)throw memberError;
+
+res.status(201).json({
+success:true,
+member:newMember
+});
+
+}catch(e){
+
+console.error('Add group member:',e);
+
+res.status(500).json({
+error:'Failed to add member.'
+});
+}
+});
+
+
+/* REMOVE MEMBER — ADMIN ONLY */
+
+app.delete('/api/groups/:groupId/members/:username',async(req,res)=>{
+const groupId=req.params.groupId;
+const admin=clean(req.body.admin_username||req.body.username);
+const member=clean(req.params.username);
+
+if(!admin||!member){
+return res.status(400).json({
+error:'Admin and member usernames are required.'
+});
+}
+
+try{
+
+const{data:group,error:groupError}=await supabase
+.from('groups')
+.select('*')
+.eq('id',groupId)
+.maybeSingle();
+
+if(groupError)throw groupError;
+
+if(!group){
+return res.status(404).json({
+error:'Group not found.'
+});
+}
+
+if(!same(group.admin_username,admin)){
+return res.status(403).json({
+error:'Only the group admin can remove members.'
+});
+}
+
+if(same(group.admin_username,member)){
+return res.status(400).json({
+error:'The group admin cannot be removed.'
+});
+}
+
+const{error}=await supabase
+.from('group_members')
+.delete()
+.eq('group_id',groupId)
+.ilike('username',member);
+
+if(error)throw error;
+
+res.json({
+success:true
+});
+
+}catch(e){
+
+console.error('Remove group member:',e);
+
+res.status(500).json({
+error:'Failed to remove member.'
+});
+}
+});
+
+
+/* GROUP MESSAGES */
+
+app.get('/api/groups/:groupId/messages',async(req,res)=>{
+const groupId=req.params.groupId;
+const username=clean(req.query.username);
+
+try{
+
+if(username){
+
+const{data:member,error:memberError}=await supabase
+.from('group_members')
+.select('id')
+.eq('group_id',groupId)
+.ilike('username',username)
+.maybeSingle();
+
+if(memberError)throw memberError;
+
+if(!member){
+return res.status(403).json({
+error:'You are not a member of this group.'
+});
+}
+}
+
+const{data:messages,error}=await supabase
+.from('group_messages')
+.select('*')
+.eq('group_id',groupId)
+.order('created_at',{ascending:true});
+
+if(error)throw error;
+
+res.json({
+messages:messages||[]
+});
+
+}catch(e){
+
+console.error('Group messages:',e);
+
+res.status(500).json({
+error:'Failed to fetch group messages.'
+});
+}
+});
+
+
+/* SEND GROUP MESSAGE */
+
+app.post('/api/groups/:groupId/messages',async(req,res)=>{
+const groupId=req.params.groupId;
+const sender=clean(req.body.sender_username||req.body.sender);
+const content=req.body.content||'';
+const image_url=req.body.image_url||null;
+
+if(!sender||(!content&&!image_url)){
+return res.status(400).json({
+error:'Sender and content/image are required.'
+});
+}
+
+try{
+
+const{data:member,error:memberError}=await supabase
+.from('group_members')
+.select('id')
+.eq('group_id',groupId)
+.ilike('username',sender)
+.maybeSingle();
+
+if(memberError)throw memberError;
+
+if(!member){
+return res.status(403).json({
+error:'You are not a member of this group.'
+});
+}
+
+const{data:message,error}=await supabase
+.from('group_messages')
+.insert([{
+group_id:groupId,
+sender_username:sender,
+content,
+image_url
+}])
+.select()
+.single();
+
+if(error)throw error;
+
+res.status(201).json({
+success:true,
+message
+});
+
+}catch(e){
+
+console.error('Send group message:',e);
+
+res.status(500).json({
+error:'Failed to send group message.'
+});
+}
+});
+
+
+/* DELETE GROUP — ADMIN ONLY */
+
+app.delete('/api/groups/:groupId',async(req,res)=>{
+const groupId=req.params.groupId;
+const username=clean(req.body.username);
+
+if(!username){
+return res.status(400).json({
+error:'Username is required.'
+});
+}
+
+try{
+
+const{data:group,error:groupError}=await supabase
+.from('groups')
+.select('*')
+.eq('id',groupId)
+.maybeSingle();
+
+if(groupError)throw groupError;
+
+if(!group){
+return res.status(404).json({
+error:'Group not found.'
+});
+}
+
+if(!same(group.admin_username,username)){
+return res.status(403).json({
+error:'Only the group admin can delete the group.'
+});
+}
+
+const{error}=await supabase
+.from('groups')
+.delete()
+.eq('id',groupId);
+
+if(error)throw error;
+
+res.json({
+success:true
+});
+
+}catch(e){
+
+console.error('Delete group:',e);
+
+res.status(500).json({
+error:'Failed to delete group.'
+});
+}
+});
+
+
+/* LEAVE GROUP */
+
+app.delete('/api/groups/:groupId/leave',async(req,res)=>{
+const groupId=req.params.groupId;
+const username=clean(req.body.username);
+
+if(!username){
+return res.status(400).json({
+error:'Username is required.'
+});
+}
+
+try{
+
+const{data:group,error:groupError}=await supabase
+.from('groups')
+.select('*')
+.eq('id',groupId)
+.maybeSingle();
+
+if(groupError)throw groupError;
+
+if(!group){
+return res.status(404).json({
+error:'Group not found.'
+});
+}
+
+if(same(group.admin_username,username)){
+return res.status(400).json({
+error:'The admin cannot leave the group. Delete the group instead.'
+});
+}
+
+const{error}=await supabase
+.from('group_members')
+.delete()
+.eq('group_id',groupId)
+.ilike('username',username);
+
+if(error)throw error;
+
+res.json({
+success:true
+});
+
+}catch(e){
+
+console.error('Leave group:',e);
+
+res.status(500).json({
+error:'Failed to leave group.'
+});
+}
+});
 /* =========================================================
    ERROR HANDLER
 ========================================================= */
