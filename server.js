@@ -18,6 +18,9 @@ webpush.setVapidDetails('mailto:mustaphaadegboyega801@gmail.com',publicVapidKey,
 
 app.get('/',(req,res)=>res.status(200).send('Retro Backend API is live and healthy!'));
 
+const clean=u=>(u||'').trim().replace(/^@/,'');
+const same=(a,b)=>(a||'').toLowerCase()===(b||'').toLowerCase();
+
 async function deleteExpiredMessages(){
 try{
 const{error}=await supabase.from('direct_messages').delete().lte('expires_at',new Date().toISOString());
@@ -28,140 +31,622 @@ if(error)console.error(error.message)
 deleteExpiredMessages();
 setInterval(deleteExpiredMessages,60000);
 
-const clean=u=>(u||'').trim().replace(/^@/,'');
 
-/* AUTH */
+/* =========================================================
+   AUTH
+========================================================= */
 
 const handleSignup=async(req,res)=>{
 const username=clean(req.body.username),password=req.body.password;
+
 if(!username||!password)return res.status(400).json({error:'Username and password are required.'});
 
 try{
 const{data,error}=await supabase.from('users').insert([{username,password}]).select().single();
-if(error)return res.status(400).json({error:error.code==='23505'?'Username already taken.':error.message});
-res.status(201).json({success:true,user:data})
+
+if(error){
+return res.status(400).json({
+error:error.code==='23505'?'Username already taken.':error.message
+});
+}
+
+res.status(201).json({success:true,user:data});
+
 }catch(e){
-res.status(500).json({error:'Internal server error during signup.'})
+console.error('Signup:',e);
+res.status(500).json({error:'Internal server error during signup.'});
 }
 };
 
 app.post('/api/signup',handleSignup);
 app.post('/api/register',handleSignup);
 
+
 app.post('/api/login',async(req,res)=>{
 const username=clean(req.body.username),password=req.body.password;
-if(!username||!password)return res.status(400).json({error:'Username and password are required.'});
+
+if(!username||!password){
+return res.status(400).json({error:'Username and password are required.'});
+}
 
 try{
-const{data:user,error}=await supabase.from('users').select('*').eq('username',username).eq('password',password).maybeSingle();
-if(error||!user)return res.status(401).json({error:'Invalid username or password.'});
-res.json({success:true,user})
+const{data:user,error}=await supabase
+.from('users')
+.select('*')
+.ilike('username',username)
+.eq('password',password)
+.maybeSingle();
+
+if(error||!user){
+return res.status(401).json({error:'Invalid username or password.'});
+}
+
+res.json({success:true,user});
+
 }catch(e){
-res.status(500).json({error:'Login failed due to a server error.'})
+console.error('Login:',e);
+res.status(500).json({error:'Login failed due to a server error.'});
 }
 });
 
-/* USERS */
+
+/* =========================================================
+   USERS
+========================================================= */
 
 app.get('/api/users',async(req,res)=>{
 try{
-const{data,error}=await supabase.from('users').select('username,profile_picture');
+const{data,error}=await supabase
+.from('users')
+.select('id,username,profile_picture');
+
 if(error)throw error;
-res.json(data||[])
+
+res.json(data||[]);
+
 }catch(e){
 console.error('Fetch users error:',e);
-res.status(500).json({error:'Failed to fetch users.'})
+res.status(500).json({error:'Failed to fetch users.'});
 }
 });
+
 
 app.get('/api/users/:username',async(req,res)=>{
 try{
-const{data,error}=await supabase.from('users').select('*').ilike('username',clean(req.params.username)).maybeSingle();
-if(error||!data)return res.status(404).json({error:'User not found.'});
-res.json(data)
+const username=clean(req.params.username);
+
+const{data,error}=await supabase
+.from('users')
+.select('*')
+.ilike('username',username)
+.maybeSingle();
+
+if(error||!data){
+return res.status(404).json({error:'User not found.'});
+}
+
+res.json(data);
+
 }catch(e){
-res.status(500).json({error:'Failed to fetch user profile.'})
+console.error('Fetch profile:',e);
+res.status(500).json({error:'Failed to fetch user profile.'});
 }
 });
+
+
+/* =========================================================
+   CHANGE USERNAME + PROFILE
+   IMPORTANT:
+   The users.id NEVER changes.
+   All username references are updated.
+========================================================= */
+
+async function renameUser(oldUsername,newUsername){
+
+oldUsername=clean(oldUsername);
+newUsername=clean(newUsername);
+
+if(!oldUsername||!newUsername){
+throw new Error('Both old and new usernames are required.');
+}
+
+if(same(oldUsername,newUsername)){
+return {success:true,username:oldUsername,changed:false};
+}
+
+
+/* Check that old account exists */
+
+const{data:user,error:userError}=await supabase
+.from('users')
+.select('id,username,profile_picture,password')
+.ilike('username',oldUsername)
+.maybeSingle();
+
+if(userError)throw userError;
+
+if(!user){
+const e=new Error('Current user not found.');
+e.code='USER_NOT_FOUND';
+throw e;
+}
+
+
+/* Check new username */
+
+const{data:existing,error:existingError}=await supabase
+.from('users')
+.select('id,username')
+.ilike('username',newUsername)
+.maybeSingle();
+
+if(existingError)throw existingError;
+
+if(existing&&!same(existing.username,oldUsername)){
+const e=new Error('Username already taken.');
+e.code='USERNAME_TAKEN';
+throw e;
+}
+
+
+/*
+   Update every table that stores the username.
+
+   We do these BEFORE changing the users row.
+   That way the original account still exists while
+   its related records are being moved.
+*/
+
+
+/* DIRECT MESSAGES */
+
+let result=await supabase
+.from('direct_messages')
+.update({sender_username:newUsername})
+.eq('sender_username',oldUsername);
+
+if(result.error)throw result.error;
+
+result=await supabase
+.from('direct_messages')
+.update({receiver_username:newUsername})
+.eq('receiver_username',oldUsername);
+
+if(result.error)throw result.error;
+
+
+/* GAME CHALLENGES */
+
+result=await supabase
+.from('game_challenges')
+.update({sender:newUsername})
+.eq('sender',oldUsername);
+
+if(result.error)throw result.error;
+
+result=await supabase
+.from('game_challenges')
+.update({receiver:newUsername})
+.eq('receiver',oldUsername);
+
+if(result.error)throw result.error;
+
+
+/* GAME SESSIONS */
+
+result=await supabase
+.from('game_sessions')
+.update({player1:newUsername})
+.eq('player1',oldUsername);
+
+if(result.error)throw result.error;
+
+result=await supabase
+.from('game_sessions')
+.update({player2:newUsername})
+.eq('player2',oldUsername);
+
+if(result.error)throw result.error;
+
+result=await supabase
+.from('game_sessions')
+.update({turn:newUsername})
+.eq('turn',oldUsername);
+
+if(result.error)throw result.error;
+
+result=await supabase
+.from('game_sessions')
+.update({winner:newUsername})
+.eq('winner',oldUsername);
+
+if(result.error)throw result.error;
+
+
+/* PUSH SUBSCRIPTIONS */
+
+result=await supabase
+.from('push_subscriptions')
+.update({username:newUsername.toLowerCase()})
+.eq('username',oldUsername.toLowerCase());
+
+if(result.error)throw result.error;
+
+
+/* FINALLY CHANGE THE USERS ROW */
+
+result=await supabase
+.from('users')
+.update({username:newUsername})
+.eq('id',user.id);
+
+if(result.error)throw result.error;
+
+
+/* Return the same account ID */
+
+return{
+success:true,
+changed:true,
+id:user.id,
+username:newUsername,
+profile_picture:user.profile_picture
+};
+}
+
+
+/*
+   MAIN PROFILE UPDATE ROUTE
+
+   It supports:
+   username only
+   profile picture only
+   username + profile picture
+*/
 
 app.post('/api/users/profile',async(req,res)=>{
-const username=clean(req.body.username),pfp=req.body.profile_picture||req.body.pfp;
-if(!username)return res.status(400).json({error:'Username is required.'});
+const currentUsername=clean(
+req.body.current_username||
+req.body.old_username||
+req.body.username
+);
+
+const requestedUsername=clean(
+req.body.new_username||
+req.body.username
+);
+
+const pfp=req.body.profile_picture||req.body.pfp;
+
+if(!currentUsername){
+return res.status(400).json({error:'Current username is required.'});
+}
 
 try{
-const{error}=await supabase.from('users').update({profile_picture:pfp}).eq('username',username);
+
+let finalUsername=currentUsername;
+let renamed=false;
+
+
+/* Rename if a different username was requested */
+
+if(
+requestedUsername&&
+!same(currentUsername,requestedUsername)
+){
+
+const renameResult=await renameUser(
+currentUsername,
+requestedUsername
+);
+
+finalUsername=renameResult.username;
+renamed=renameResult.changed;
+
+}else{
+
+/* Verify user exists */
+
+const{data:user,error:userError}=await supabase
+.from('users')
+.select('id,username')
+.ilike('username',currentUsername)
+.maybeSingle();
+
+if(userError)throw userError;
+
+if(!user){
+return res.status(404).json({error:'User not found.'});
+}
+}
+
+
+/* Update profile picture if supplied */
+
+if(pfp){
+
+const{error}=await supabase
+.from('users')
+.update({profile_picture:pfp})
+.ilike('username',finalUsername);
+
 if(error)throw error;
-res.json({success:true,message:'Profile updated successfully.'})
+}
+
+
+const{data:user,error:userError}=await supabase
+.from('users')
+.select('*')
+.ilike('username',finalUsername)
+.maybeSingle();
+
+if(userError)throw userError;
+
+res.json({
+success:true,
+renamed,
+user
+});
+
 }catch(e){
-res.status(500).json({error:'Failed to update profile picture.'})
+
+console.error('Profile update:',e);
+
+if(e.code==='USERNAME_TAKEN'){
+return res.status(409).json({error:'Username already taken.'});
+}
+
+if(e.code==='USER_NOT_FOUND'){
+return res.status(404).json({error:'Current user not found.'});
+}
+
+res.status(500).json({
+error:e.message||'Failed to update profile.'
+});
 }
 });
+
+
+/*
+   Dedicated username-change route.
+
+   Your frontend can also use this directly:
+   POST /api/users/rename
+*/
+
+app.post('/api/users/rename',async(req,res)=>{
+const oldUsername=clean(
+req.body.old_username||
+req.body.current_username
+);
+
+const newUsername=clean(
+req.body.new_username
+);
+
+if(!oldUsername||!newUsername){
+return res.status(400).json({
+error:'Old username and new username are required.'
+});
+}
+
+try{
+
+const result=await renameUser(
+oldUsername,
+newUsername
+);
+
+const{data:user,error}=await supabase
+.from('users')
+.select('*')
+.ilike('username',newUsername)
+.maybeSingle();
+
+if(error)throw error;
+
+res.json({
+success:true,
+user,
+message:'Username changed successfully. Your account, profile, chats and games were preserved.'
+});
+
+}catch(e){
+
+console.error('Rename user:',e);
+
+if(e.code==='USERNAME_TAKEN'){
+return res.status(409).json({error:'Username already taken.'});
+}
+
+if(e.code==='USER_NOT_FOUND'){
+return res.status(404).json({error:'Current username not found.'});
+}
+
+res.status(500).json({
+error:e.message||'Failed to change username.'
+});
+}
+});
+
+
+/* Profile picture shortcut */
 
 app.post('/api/users/pfp',async(req,res)=>{
 const username=clean(req.body.username),pfpUrl=req.body.pfpUrl||req.body.profile_picture||req.body.pfp;
-if(!username||!pfpUrl)return res.status(400).json({error:'Username and pfpUrl are required'});
+
+if(!username||!pfpUrl){
+return res.status(400).json({
+error:'Username and pfpUrl are required'
+});
+}
 
 try{
-const{error}=await supabase.from('users').update({profile_picture:pfpUrl}).eq('username',username);
+
+const{error}=await supabase
+.from('users')
+.update({profile_picture:pfpUrl})
+.ilike('username',username);
+
 if(error)throw error;
-res.json({success:true,pfpUrl})
+
+res.json({
+success:true,
+pfpUrl
+});
+
 }catch(e){
-res.status(500).json({error:'Failed to save profile picture.'})
+console.error('Save profile picture:',e);
+res.status(500).json({error:'Failed to save profile picture.'});
 }
 });
+
+
+/* DELETE ACCOUNT */
 
 app.delete('/api/users/:username',async(req,res)=>{
 const u=clean(req.params.username);
 
 try{
-await supabase.from('push_subscriptions').delete().eq('username',u.toLowerCase());
-await supabase.from('direct_messages').delete().or(`sender_username.eq.${u},receiver_username.eq.${u}`);
 
-const{error}=await supabase.from('users').delete().eq('username',u);
+await supabase
+.from('push_subscriptions')
+.delete()
+.eq('username',u.toLowerCase());
+
+await supabase
+.from('direct_messages')
+.delete()
+.or(`sender_username.eq.${u},receiver_username.eq.${u}`);
+
+
+/* Remove challenges involving user */
+
+await supabase
+.from('game_challenges')
+.delete()
+.or(`sender.eq.${u},receiver.eq.${u}`);
+
+
+/* Remove games involving user */
+
+await supabase
+.from('game_sessions')
+.delete()
+.or(`player1.eq.${u},player2.eq.${u}`);
+
+
+const{error}=await supabase
+.from('users')
+.delete()
+.ilike('username',u);
+
 if(error)throw error;
 
-res.json({success:true,message:'Account deleted successfully.'})
+res.json({
+success:true,
+message:'Account deleted successfully.'
+});
+
 }catch(e){
-res.status(500).json({error:'Failed to delete account.'})
+
+console.error('Delete account:',e);
+
+res.status(500).json({
+error:'Failed to delete account.'
+});
 }
 });
 
-/* PUSH NOTIFICATIONS */
 
-app.get('/api/vapid-public-key',(req,res)=>res.json({publicKey:publicVapidKey}));
+/* =========================================================
+   PUSH NOTIFICATIONS
+========================================================= */
+
+app.get('/api/vapid-public-key',(req,res)=>{
+res.json({publicKey:publicVapidKey});
+});
+
 
 app.post('/api/subscribe',async(req,res)=>{
 const username=clean(req.body.username),subscription=req.body.subscription;
-if(!username||!subscription)return res.status(400).json({error:'Username and subscription object are required.'});
+
+if(!username||!subscription){
+return res.status(400).json({
+error:'Username and subscription object are required.'
+});
+}
 
 try{
-const{error}=await supabase.from('push_subscriptions').upsert(
-{username:username.toLowerCase(),subscription:JSON.stringify(subscription)},
+
+const{error}=await supabase
+.from('push_subscriptions')
+.upsert(
+{
+username:username.toLowerCase(),
+subscription:JSON.stringify(subscription)
+},
 {onConflict:'username'}
 );
+
 if(error)throw error;
-res.status(201).json({success:true,message:'Push subscription saved.'})
+
+res.status(201).json({
+success:true,
+message:'Push subscription saved.'
+});
+
 }catch(e){
-res.status(500).json({error:'Failed to save push subscription.'})
+
+console.error('Subscribe:',e);
+
+res.status(500).json({
+error:'Failed to save push subscription.'
+});
 }
 });
 
+
 async function sendPushNotification(user,payload){
+
 try{
-const{data}=await supabase.from('push_subscriptions').select('subscription').eq('username',user.toLowerCase()).maybeSingle();
-if(data)await webpush.sendNotification(data.subscription?JSON.parse(data.subscription):null,JSON.stringify(payload))
+
+const{data}=await supabase
+.from('push_subscriptions')
+.select('subscription')
+.eq('username',user.toLowerCase())
+.maybeSingle();
+
+if(data){
+
+await webpush.sendNotification(
+data.subscription?JSON.parse(data.subscription):null,
+JSON.stringify(payload)
+);
+
+}
+
 }catch(e){
-console.error('Push notification:',e.message)
+console.error('Push notification:',e.message);
 }
 }
 
-/* CONVERSATIONS */
+
+/* =========================================================
+   CONVERSATIONS
+========================================================= */
 
 app.get('/api/conversations',async(req,res)=>{
 const username=clean(req.query.username);
-if(!username)return res.status(400).json({error:'Username query parameter is required.'});
+
+if(!username){
+return res.status(400).json({
+error:'Username query parameter is required.'
+});
+}
 
 try{
+
 const{data,error}=await supabase
 .from('direct_messages')
 .select('*')
@@ -174,30 +659,54 @@ if(error)throw error;
 const map=new Map();
 
 (data||[]).forEach(m=>{
-const other=m.sender_username.toLowerCase()===username.toLowerCase()?m.receiver_username:m.sender_username;
+
+const other=
+same(m.sender_username,username)
+?m.receiver_username
+:m.sender_username;
 
 if(!map.has(other.toLowerCase())){
+
 map.set(other.toLowerCase(),{
 other_user:other,
 last_message:m.content||(m.image_url?'[Image]':''),
 created_at:m.created_at
-})
-}
 });
 
-res.json({conversations:[...map.values()]})
+}
+
+});
+
+res.json({
+conversations:[...map.values()]
+});
+
 }catch(e){
-res.status(500).json({error:'Failed to fetch conversations.'})
+
+console.error('Conversations:',e);
+
+res.status(500).json({
+error:'Failed to fetch conversations.'
+});
 }
 });
 
-/* MESSAGES */
+
+/* =========================================================
+   MESSAGES
+========================================================= */
 
 app.get('/api/messages/:username',async(req,res)=>{
 const u=clean(req.params.username);
-if(!u)return res.status(400).json({error:'Username parameter is required.'});
+
+if(!u){
+return res.status(400).json({
+error:'Username parameter is required.'
+});
+}
 
 try{
+
 const{data,error}=await supabase
 .from('direct_messages')
 .select('*')
@@ -206,42 +715,82 @@ const{data,error}=await supabase
 .order('created_at',{ascending:true});
 
 if(error)throw error;
-res.json(data||[])
+
+res.json(data||[]);
+
 }catch(e){
-res.status(500).json({error:'Failed to fetch messages.'})
+
+console.error('Messages:',e);
+
+res.status(500).json({
+error:'Failed to fetch messages.'
+});
 }
 });
 
+
 app.get('/api/messages',async(req,res)=>{
 const u1=clean(req.query.user1),u2=clean(req.query.user2);
-if(!u1||!u2)return res.status(400).json({error:'Both user1 and user2 query parameters are required.'});
+
+if(!u1||!u2){
+return res.status(400).json({
+error:'Both user1 and user2 query parameters are required.'
+});
+}
 
 try{
+
 const{data,error}=await supabase
 .from('direct_messages')
 .select('*')
-.or(`and(sender_username.eq.${u1},receiver_username.eq.${u2}),and(sender_username.eq.${u2},receiver_username.eq.${u1})`)
+.or(
+`and(sender_username.eq.${u1},receiver_username.eq.${u2}),and(sender_username.eq.${u2},receiver_username.eq.${u1})`
+)
 .or(`expires_at.is.null,expires_at.gt.${new Date().toISOString()}`)
 .order('created_at',{ascending:true});
 
 if(error)throw error;
-res.json({messages:data||[]})
+
+res.json({
+messages:data||[]
+});
+
 }catch(e){
-res.status(500).json({error:'Failed to fetch messages.'})
+
+console.error('Messages between users:',e);
+
+res.status(500).json({
+error:'Failed to fetch messages.'
+});
 }
 });
 
-app.post('/api/messages',async(req,res)=>{
-const sender=clean(req.body.sender_username||req.body.sender),receiver=clean(req.body.receiver_username||req.body.receiver),content=req.body.content||'',image_url=req.body.image_url||null;
 
-if(!sender||!receiver||(!content&&!image_url))return res.status(400).json({error:'Sender, receiver, and content/image are required.'});
+app.post('/api/messages',async(req,res)=>{
+const sender=clean(req.body.sender_username||req.body.sender);
+const receiver=clean(req.body.receiver_username||req.body.receiver);
+const content=req.body.content||'';
+const image_url=req.body.image_url||null;
+
+if(!sender||!receiver||(!content&&!image_url)){
+return res.status(400).json({
+error:'Sender, receiver, and content/image are required.'
+});
+}
 
 try{
+
 const expires_at=new Date(Date.now()+86400000).toISOString();
 
 const{data:message,error}=await supabase
 .from('direct_messages')
-.insert([{sender_username:sender,receiver_username:receiver,content,image_url,expires_at}])
+.insert([{
+sender_username:sender,
+receiver_username:receiver,
+content,
+image_url,
+expires_at
+}])
 .select()
 .single();
 
@@ -249,39 +798,74 @@ if(error)throw error;
 
 sendPushNotification(receiver,{
 title:sender,
-body:content.startsWith('[sticker]')?'🎨 Sticker':content.startsWith('[img]')?'🖼 Image':content.startsWith('[audio]')?'🎤 Voice note':content||'New message',
+body:
+content.startsWith('[sticker]')
+?'🎨 Sticker':
+content.startsWith('[img]')
+?'🖼 Image':
+content.startsWith('[audio]')
+?'🎤 Voice note':
+content||'New message',
 icon:'/icon.png',
 url:`/chat.html?user=${encodeURIComponent(sender)}`,
 badgeCount:1
 });
 
-res.status(201).json({success:true,message})
+res.status(201).json({
+success:true,
+message
+});
+
 }catch(e){
+
 console.error('Send message:',e);
-res.status(500).json({error:'Failed to send message.'})
+
+res.status(500).json({
+error:'Failed to send message.'
+});
 }
 });
+
 
 app.delete('/api/messages/conversation',async(req,res)=>{
 const u1=clean(req.body.user1),u2=clean(req.body.user2);
-if(!u1||!u2)return res.status(400).json({error:'Both user1 and user2 are required.'});
+
+if(!u1||!u2){
+return res.status(400).json({
+error:'Both user1 and user2 are required.'
+});
+}
 
 try{
+
 const{error}=await supabase
 .from('direct_messages')
 .delete()
-.or(`and(sender_username.eq.${u1},receiver_username.eq.${u2}),and(sender_username.eq.${u2},receiver_username.eq.${u1})`);
+.or(
+`and(sender_username.eq.${u1},receiver_username.eq.${u2}),and(sender_username.eq.${u2},receiver_username.eq.${u1})`
+);
 
 if(error)throw error;
 
-res.json({success:true,message:'Conversation permanently deleted.'})
+res.json({
+success:true,
+message:'Conversation permanently deleted.'
+});
+
 }catch(e){
-res.status(500).json({error:'Failed to permanently delete conversation.'})
+
+console.error('Delete conversation:',e);
+
+res.status(500).json({
+error:'Failed to permanently delete conversation.'
+});
 }
 });
 
 
-/* ==================== GAMES — CHALLENGES ==================== */
+/* =========================================================
+   GAMES — CHALLENGES
+========================================================= */
 
 app.post('/api/games/challenge',async(req,res)=>{
 const sender=clean(req.body.sender);
@@ -289,34 +873,48 @@ const receiver=clean(req.body.receiver);
 const game=(req.body.game||'').trim().toLowerCase();
 
 if(!sender||!receiver||!game){
-return res.status(400).json({error:'Sender, receiver, and game are required.'});
+return res.status(400).json({
+error:'Sender, receiver, and game are required.'
+});
 }
 
-if(sender.toLowerCase()===receiver.toLowerCase()){
-return res.status(400).json({error:'You cannot challenge yourself.'});
+if(same(sender,receiver)){
+return res.status(400).json({
+error:'You cannot challenge yourself.'
+});
 }
 
 if(!['tictactoe','chess'].includes(game)){
-return res.status(400).json({error:'Invalid game.'});
+return res.status(400).json({
+error:'Invalid game.'
+});
 }
 
 try{
+
 const{data:dm,error:dmError}=await supabase
 .from('direct_messages')
 .select('id')
-.or(`and(sender_username.eq.${sender},receiver_username.eq.${receiver}),and(sender_username.eq.${receiver},receiver_username.eq.${sender})`)
+.or(
+`and(sender_username.eq.${sender},receiver_username.eq.${receiver}),and(sender_username.eq.${receiver},receiver_username.eq.${sender})`
+)
 .limit(1);
 
 if(dmError)throw dmError;
 
 if(!dm||!dm.length){
-return res.status(403).json({error:'You can only play with someone in your DMs.'});
+return res.status(403).json({
+error:'You can only play with someone in your DMs.'
+});
 }
+
 
 const{data:existing,error:existingError}=await supabase
 .from('game_challenges')
 .select('*')
-.or(`and(sender.eq.${sender},receiver.eq.${receiver}),and(sender.eq.${receiver},receiver.eq.${sender})`)
+.or(
+`and(sender.eq.${sender},receiver.eq.${receiver}),and(sender.eq.${receiver},receiver.eq.${sender})`
+)
 .eq('game',game)
 .eq('status','pending')
 .limit(1);
@@ -324,8 +922,11 @@ const{data:existing,error:existingError}=await supabase
 if(existingError)throw existingError;
 
 if(existing&&existing.length){
-return res.status(409).json({error:'There is already a pending challenge.'});
+return res.status(409).json({
+error:'There is already a pending challenge.'
+});
 }
+
 
 const{data:challenge,error:challengeError}=await supabase
 .from('game_challenges')
@@ -354,6 +955,7 @@ challenge
 });
 
 }catch(e){
+
 console.error('Create game challenge:',e);
 
 res.status(500).json({
@@ -363,17 +965,19 @@ error:'Failed to create game challenge.'
 });
 
 
-/* SENT CHALLENGES
-   IMPORTANT: This route MUST come BEFORE /:username */
+/* SENT CHALLENGES */
 
 app.get('/api/games/challenges/sent/:username',async(req,res)=>{
 const username=clean(req.params.username);
 
 if(!username){
-return res.status(400).json({error:'Username is required.'});
+return res.status(400).json({
+error:'Username is required.'
+});
 }
 
 try{
+
 const{data:challenges,error:challengeError}=await supabase
 .from('game_challenges')
 .select('*')
@@ -389,7 +993,11 @@ for(const challenge of challenges||[]){
 
 let game=null;
 
-if(challenge.status==='accepted'&&challenge.game==='tictactoe'&&challenge.game_id){
+if(
+challenge.status==='accepted'&&
+challenge.game==='tictactoe'&&
+challenge.game_id
+){
 
 const{data:games,error:gameError}=await supabase
 .from('game_sessions')
@@ -405,7 +1013,6 @@ game=games[0];
 }
 }
 
-/* Fallback in case game_id was not stored */
 
 if(
 challenge.status==='accepted'&&
@@ -429,10 +1036,12 @@ game=fallbackGames[0];
 }
 }
 
+
 results.push({
 ...challenge,
 game
 });
+
 }
 
 res.json({
@@ -440,6 +1049,7 @@ challenges:results
 });
 
 }catch(e){
+
 console.error('Fetch sent game challenges:',e);
 
 res.status(500).json({
@@ -449,17 +1059,19 @@ error:'Failed to fetch sent challenges.'
 });
 
 
-/* INCOMING CHALLENGES
-   IMPORTANT: This route comes AFTER /sent/:username */
+/* INCOMING CHALLENGES */
 
 app.get('/api/games/challenges/:username',async(req,res)=>{
 const username=clean(req.params.username);
 
 if(!username){
-return res.status(400).json({error:'Username is required.'});
+return res.status(400).json({
+error:'Username is required.'
+});
 }
 
 try{
+
 const{data,error}=await supabase
 .from('game_challenges')
 .select('*')
@@ -474,6 +1086,7 @@ challenges:data||[]
 });
 
 }catch(e){
+
 console.error('Fetch game challenges:',e);
 
 res.status(500).json({
@@ -519,9 +1132,7 @@ if(action==='decline'){
 
 const{data:updated,error:updateError}=await supabase
 .from('game_challenges')
-.update({
-status:'declined'
-})
+.update({status:'declined'})
 .eq('id',id)
 .eq('receiver',username)
 .eq('status','pending')
@@ -542,9 +1153,7 @@ game:null
 
 const{data:updated,error:updateError}=await supabase
 .from('game_challenges')
-.update({
-status:'accepted'
-})
+.update({status:'accepted'})
 .eq('id',id)
 .eq('receiver',username)
 .eq('status','pending')
@@ -581,8 +1190,6 @@ const{data:newGame,error:gameError}=await supabase
 if(gameError)throw gameError;
 
 
-/* Save game ID on challenge */
-
 const{error:challengeGameError}=await supabase
 .from('game_challenges')
 .update({
@@ -591,11 +1198,12 @@ game_id:newGame.game_id
 .eq('id',id);
 
 if(challengeGameError){
-console.error('Could not store game_id:',challengeGameError.message);
+console.error(
+'Could not store game_id:',
+challengeGameError.message
+);
 }
 
-
-/* Notify sender */
 
 sendPushNotification(challenge.sender,{
 title:'🎮 Game Accepted',
@@ -635,6 +1243,7 @@ game:null
 });
 }
 
+
 res.json({
 success:true,
 challenge:updated,
@@ -642,6 +1251,7 @@ game:null
 });
 
 }catch(e){
+
 console.error('Respond to game challenge:',e);
 
 res.status(500).json({
@@ -678,8 +1288,8 @@ error:'Challenge not found.'
 }
 
 if(
-challenge.sender.toLowerCase()!==username.toLowerCase()&&
-challenge.receiver.toLowerCase()!==username.toLowerCase()
+!same(challenge.sender,username)&&
+!same(challenge.receiver,username)
 ){
 return res.status(403).json({
 error:'You are not part of this challenge.'
@@ -698,6 +1308,7 @@ success:true
 });
 
 }catch(e){
+
 console.error('Delete game challenge:',e);
 
 res.status(500).json({
@@ -707,7 +1318,9 @@ error:'Failed to delete game challenge.'
 });
 
 
-/* ==================== TIC TAC TOE ==================== */
+/* =========================================================
+   TIC TAC TOE
+========================================================= */
 
 app.post('/api/games/tictactoe',async(req,res)=>{
 const player1=clean(req.body.player1);
@@ -719,7 +1332,7 @@ error:'Both players are required.'
 });
 }
 
-if(player1.toLowerCase()===player2.toLowerCase()){
+if(same(player1,player2)){
 return res.status(400).json({
 error:'You cannot play yourself.'
 });
@@ -755,6 +1368,7 @@ game:data
 });
 
 }catch(e){
+
 console.error('Create Tic Tac Toe game:',e);
 
 res.status(500).json({
@@ -787,6 +1401,7 @@ game:data
 });
 
 }catch(e){
+
 console.error('Get Tic Tac Toe game:',e);
 
 res.status(500).json({
@@ -824,11 +1439,8 @@ error:'Game not found.'
 });
 }
 
-const isPlayer1=
-game.player1.toLowerCase()===username.toLowerCase();
-
-const isPlayer2=
-game.player2.toLowerCase()===username.toLowerCase();
+const isPlayer1=same(game.player1,username);
+const isPlayer2=same(game.player2,username);
 
 if(!isPlayer1&&!isPlayer2){
 return res.status(403).json({
@@ -842,7 +1454,7 @@ error:'Game is already finished.'
 });
 }
 
-if(game.turn.toLowerCase()!==username.toLowerCase()){
+if(!same(game.turn,username)){
 return res.status(400).json({
 error:'Not your turn.'
 });
@@ -880,9 +1492,11 @@ board[a]&&
 board[a]===board[b]&&
 board[a]===board[c]
 ){
+
 winner=username;
 status='finished';
 break;
+
 }
 
 }
@@ -892,7 +1506,7 @@ status='draw';
 }
 
 const nextTurn=
-username.toLowerCase()===game.player1.toLowerCase()
+same(username,game.player1)
 ?game.player2
 :game.player1;
 
@@ -931,7 +1545,7 @@ badgeCount:1
 if(status==='finished'||status==='draw'){
 
 const opponent=
-username.toLowerCase()===game.player1.toLowerCase()
+same(username,game.player1)
 ?game.player2
 :game.player1;
 
@@ -954,6 +1568,7 @@ game:updated
 });
 
 }catch(e){
+
 console.error('Tic Tac Toe move:',e);
 
 res.status(500).json({
@@ -961,8 +1576,6 @@ error:'Failed to make move.'
 });
 }
 });
-
-
 app.delete('/api/games/tictactoe/:gameId',async(req,res)=>{
 try{
 
@@ -987,53 +1600,78 @@ error:'Failed to delete game.'
 });
 }
 });
-
-
-/* TYPING + ONLINE */
+/* =========================================================
+   TYPING + ONLINE
+========================================================= */
 
 const typingState=new Map(),userHeartbeats=new Map();
-
 app.post('/api/typing',(req,res)=>{
 const{sender,receiver,isTyping}=req.body;
 
 if(sender&&receiver){
-typingState.set(`${sender.toLowerCase()}_${receiver.toLowerCase()}`,{
+
+typingState.set(
+`${sender.toLowerCase()}_${receiver.toLowerCase()}`,
+{
 isTyping:!!isTyping,
 timestamp:Date.now()
-})
+}
+);
+
 }
 
-res.json({success:true})
+res.json({success:true});
 });
-
 app.get('/api/typing/:sender/:receiver',(req,res)=>{
-const key=`${req.params.sender.toLowerCase()}_${req.params.receiver.toLowerCase()}`,s=typingState.get(key);
+const key=
+`${req.params.sender.toLowerCase()}_${req.params.receiver.toLowerCase()}`;
+
+const s=typingState.get(key);
 
 res.json({
-isTyping:!!(s&&Date.now()-s.timestamp<4000&&s.isTyping)
-})
+isTyping:!!(
+s&&
+Date.now()-s.timestamp<4000&&
+s.isTyping
+)
 });
+});
+
 
 app.post('/api/heartbeat',(req,res)=>{
-if(req.body.username)userHeartbeats.set(clean(req.body.username).toLowerCase(),Date.now());
-res.json({success:true})
-});
+if(req.body.username){
+userHeartbeats.set(
+clean(req.body.username).toLowerCase(),
+Date.now()
+);
+}
 
+res.json({success:true});
+});
 app.get('/api/online-status/:username',(req,res)=>{
-const t=userHeartbeats.get(clean(req.params.username).toLowerCase());
+const t=userHeartbeats.get(
+clean(req.params.username).toLowerCase()
+);
 
 res.json({
-online:!!(t&&Date.now()-t<30000)
-})
+online:!!(
+t&&
+Date.now()-t<30000
+)
+});
 });
 
-
-/* ERROR HANDLER */
+/* =========================================================
+   ERROR HANDLER
+========================================================= */
 
 app.use((err,req,res,next)=>{
 console.error(err);
-res.status(500).json({error:'An unexpected server error occurred.'})
+res.status(500).json({
+error:'An unexpected server error occurred.'
 });
+});
+
 
 const PORT=process.env.PORT||3000;
 
