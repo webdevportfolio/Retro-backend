@@ -1660,14 +1660,56 @@ Date.now()-t<30000
 )
 });
 });
+
 /* =========================================================
    GROUP CHATS
 ========================================================= */
+
+/* CREATE GROUP */
+
+app.get('/api/groups/available-members/:username',async(req,res)=>{
+const username=clean(req.params.username);
+
+try{
+
+const{data:messages,error}=await supabase
+.from('direct_messages')
+.select('sender_username,receiver_username')
+.or(
+`sender_username.ilike.${username},receiver_username.ilike.${username}`
+);
+
+if(error)throw error;
+
+const people=new Map();
+
+(messages||[]).forEach(m=>{
+const sender=clean(m.sender_username);
+const receiver=clean(m.receiver_username);
+
+if(!same(sender,username))people.set(sender.toLowerCase(),sender);
+if(!same(receiver,username))people.set(receiver.toLowerCase(),receiver);
+});
+
+res.json({users:[...people.values()]});
+
+}catch(e){
+
+console.error('Available create-group members:',e);
+
+res.status(500).json({
+error:'Failed to fetch available members.'
+});
+}
+});
+
 
 app.post('/api/groups',async(req,res)=>{
 const name=(req.body.name||'').trim();
 const description=(req.body.description||'').trim();
 const admin=clean(req.body.admin_username||req.body.username);
+const selectedMembers=Array.isArray(req.body.members)?req.body.members:[];
+const profilePicture=req.body.profile_picture||null;
 
 if(!name||!admin){
 return res.status(400).json({
@@ -1696,19 +1738,42 @@ const{data:group,error:groupError}=await supabase
 .insert([{
 name,
 description,
-admin_username:user.username
+admin_username:user.username,
+profile_picture:profilePicture
 }])
 .select()
 .single();
 
 if(groupError)throw groupError;
 
-const{error:memberError}=await supabase
-.from('group_members')
-.insert([{
+const members=[
+{
 group_id:group.id,
 username:user.username
-}]);
+},
+...selectedMembers
+.filter(m=>m&&!same(m,user.username))
+.map(m=>({
+group_id:group.id,
+username:clean(m)
+}))
+];
+
+const uniqueMembers=[];
+const seen=new Set();
+
+members.forEach(m=>{
+const key=m.username.toLowerCase();
+
+if(!seen.has(key)){
+seen.add(key);
+uniqueMembers.push(m);
+}
+});
+
+const{error:memberError}=await supabase
+.from('group_members')
+.insert(uniqueMembers);
 
 if(memberError)throw memberError;
 
@@ -1749,9 +1814,7 @@ const{data:members,error:memberError}=await supabase
 if(memberError)throw memberError;
 
 if(!members||!members.length){
-return res.json({
-groups:[]
-});
+return res.json({groups:[]});
 }
 
 const ids=members.map(m=>m.group_id);
@@ -2025,9 +2088,7 @@ const{error}=await supabase
 
 if(error)throw error;
 
-res.json({
-success:true
-});
+res.json({success:true});
 
 }catch(e){
 
@@ -2088,8 +2149,6 @@ error:'Failed to fetch group messages.'
 }
 });
 
-
-/* SEND GROUP MESSAGE */
 
 app.post('/api/groups/:groupId/messages',async(req,res)=>{
 const groupId=req.params.groupId;
@@ -2190,9 +2249,7 @@ const{error}=await supabase
 
 if(error)throw error;
 
-res.json({
-success:true
-});
+res.json({success:true});
 
 }catch(e){
 
@@ -2247,9 +2304,7 @@ const{error}=await supabase
 
 if(error)throw error;
 
-res.json({
-success:true
-});
+res.json({success:true});
 
 }catch(e){
 
@@ -2260,6 +2315,7 @@ error:'Failed to leave group.'
 });
 }
 });
+
 /* =========================================================
    ERROR HANDLER
 ========================================================= */
